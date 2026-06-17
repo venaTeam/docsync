@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 
 from .cost import render_usage_console, render_usage_md
-from .models import PipelineResult
+from .models import BootstrapResult, PipelineResult
 
 
 def _unified(page_path: str, before: str, after: str) -> str:
@@ -87,3 +87,73 @@ def console_summary(result: PipelineResult) -> str:
     if cost_line:
         out.append(cost_line)
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap (from-scratch generation)
+# ---------------------------------------------------------------------------
+
+
+def bootstrap_console_summary(result: BootstrapResult) -> str:
+    """Short terminal summary for `docsync bootstrap`."""
+    authored = result.authored()
+    out = [
+        f"docsync bootstrap: {len(result.plan.pages)} page(s) planned, "
+        f"{len(authored)} authored, {len(result.skipped)} skipped (collisions)."
+    ]
+    for o in result.outcomes:
+        mark = "✓" if o.applied else "·"
+        out.append(f"  {mark} {o.page_path} — {o.note}")
+    for path in result.skipped:
+        out.append(f"  ⤫ {path} — skipped: already exists")
+    cost_line = render_usage_console(result.usage)
+    if cost_line:
+        out.append(cost_line)
+    return "\n".join(out)
+
+
+def bootstrap_pr_body(result: BootstrapResult, *, group: str) -> str:
+    """Markdown PR body for a bootstrap run: pages authored + nav + manifest notes."""
+    authored = result.authored()
+    lines: list[str] = []
+    lines.append(f"## docsync — bootstrapped documentation for `{result.repo}`")
+    lines.append("")
+    lines.append(
+        f"Generated {len(authored)} new page(s) from a read-only scan of the source "
+        f"repo, registered under the **{group}** nav group, with manifest anchors so "
+        "`docsync run` can keep them in sync going forward."
+    )
+    lines.append("")
+    if authored:
+        lines.append(f"### Authored {len(authored)} page(s)")
+        for o in authored:
+            planned = next((p for p in result.plan.pages if p.page_path == o.page_path), None)
+            title = f" — {planned.title}" if planned else ""
+            lines.append(f"- **`{o.page_path}`**{title}")
+            for w in (o.validation.warnings if o.validation else []):
+                lines.append(f"  - ⚠️ {w}")
+        lines.append("")
+
+    dropped = [o for o in result.outcomes if not o.applied]
+    if dropped:
+        lines.append("### Planned but not authored")
+        for o in dropped:
+            lines.append(f"- `{o.page_path}` — {o.note}")
+        lines.append("")
+    if result.skipped:
+        lines.append("### Skipped (page/route already existed)")
+        for path in result.skipped:
+            lines.append(f"- `{path}`")
+        lines.append("")
+
+    usage_lines = render_usage_md(result.usage)
+    if usage_lines:
+        lines.extend(usage_lines)
+        lines.append("")
+
+    lines.append("---")
+    lines.append(
+        "_Opened by [docsync](https://github.com/keephq/docsync). These are "
+        "newly-generated pages — review for accuracy before merging._"
+    )
+    return "\n".join(lines)
