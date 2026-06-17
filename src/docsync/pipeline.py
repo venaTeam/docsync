@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import critique as critique_mod
 from . import edits as edits_mod
 from .config import DOCSYNC_DIR
 from .impact import map_impact
@@ -40,6 +41,7 @@ def run(
     *,
     use_embeddings: bool = False,
     check_links: bool = False,
+    self_critique: bool = False,
     client=None,
 ) -> PipelineResult:
     """Map the diff to impacted pages, generate + validate edits for each.
@@ -80,6 +82,30 @@ def run(
             outcome.note = edit.no_change_reason or "model returned no edits"
             result.outcomes.append(outcome)
             continue
+
+        # Stage 4b — adversarial self-critique (opt-in). A cheap second model
+        # checks each op against the diff and drops any not justified by it,
+        # before the edit reaches validation. Best-effort: on failure keep the
+        # original edit rather than blocking the page.
+        if self_critique:
+            try:
+                verdict = critique_mod.critique_page_edit(
+                    client,
+                    diff=diff,
+                    page_path=page.page_path,
+                    page_edit=edit,
+                    model=config.models.judge_model,
+                )
+                edit = critique_mod.apply_critique(edit, verdict)
+                outcome.edit = edit
+                if not edit.edits:
+                    outcome.note = "dropped by self-critique: " + (
+                        verdict.reason or "no edits survived"
+                    )
+                    result.outcomes.append(outcome)
+                    continue
+            except Exception as exc:  # noqa: BLE001 - guard must never block the page
+                outcome.note = f"self-critique skipped: {exc}"
 
         # Apply edits (strict str-replace).
         try:
