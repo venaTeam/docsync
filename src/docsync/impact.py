@@ -19,6 +19,7 @@ from __future__ import annotations
 import fnmatch
 from pathlib import Path
 
+from . import embeddings as embeddings_mod
 from .models import (
     CandidateSource,
     CodeDiff,
@@ -33,10 +34,6 @@ from .models import (
 # Cap the page text we feed the judge — keeps the prompt cheap and well within Haiku's
 # window while preserving enough of the page to judge relevance.
 _MAX_PAGE_CHARS = 6000
-
-# Similarity floor for the embedding recall-net. Below this, a page is too weakly
-# related to the diff's identifiers to be worth a judge call.
-_EMBEDDING_FLOOR = 0.2
 
 _JUDGE_SYSTEM = (
     "You decide whether a documentation page is invalidated by a code change. "
@@ -164,110 +161,64 @@ def _query_tokens(diff: CodeDiff, config: DocsyncConfig) -> list[str]:
     return out
 
 
-def _iter_doc_chunks(docs_root: Path, pages: list[ManifestPage] | None):
-    """Yield (page_path, chunk_text) for heading sections of each .mdx page.
-
-    If `pages` is given, only those pages are indexed; otherwise every .mdx under
-    docs_root is scanned. A "chunk" is a markdown heading section (text from one
-    `#`-prefixed heading up to the next).
-    """
-    if pages is not None:
-        paths = [docs_root / p.path for p in pages]
-    else:
-        paths = sorted(docs_root.rglob("*.mdx"))
-
-    for path in paths:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        # Report page_path in the manifest-relative form.
-        try:
-            rel = str(path.relative_to(docs_root))
-        except ValueError:
-            rel = path.name
-
-        current: list[str] = []
-        for line in text.splitlines():
-            if line.lstrip().startswith("#") and current:
-                chunk = "\n".join(current).strip()
-                if chunk:
-                    yield rel, chunk
-                current = [line]
-            else:
-                current.append(line)
-        tail = "\n".join(current).strip()
-        if tail:
-            yield rel, tail
-
-
 def find_embedding_candidates(
     diff: CodeDiff,
     docs_root: Path,
     pages: list[ManifestPage] | None,
     config: DocsyncConfig,
-    top_k: int = 5,
+    *,
+    cache_dir: Path | None = None,
+    encoder=None,
+    top_k: int | None = None,
 ) -> list[ImpactCandidate]:
     """Optional recall-net: rank doc pages by semantic similarity to the diff.
 
-    Imports `sentence_transformers` lazily; if it isn't installed, returns []
-    (the extra is optional — anchors cover the high-drift pages without it).
-    Excluding pages already covered by anchors is the caller's job.
+    Builds (or loads a cached) embedding index over the docs and queries it with the
+    diff's identifier tokens. `pages=None` scans the whole docs tree — the recall-net
+    over pages the manifest doesn't anchor. With `cache_dir` set, the index is
+    persisted and reused across runs unless the docs content changed.
+
+    The encoder is injectable for testing; in production it defaults to
+    sentence-transformers. If that optional extra isn't installed, returns [] so the
+    pipeline degrades gracefully to anchors only. Excluding already-anchored pages is
+    the caller's job.
     """
-    try:
-        from sentence_transformers import SentenceTransformer  # lazy: optional extra
-    except ImportError:
-        return []
-
-    import numpy as np
-
     query_tokens = _query_tokens(diff, config)
     if not query_tokens:
         return []
 
-    chunks = list(_iter_doc_chunks(docs_root, pages))
-    if not chunks:
-        return []
+    enc = encoder
+    if enc is None:
+        try:
+            enc = embeddings_mod.default_encoder(config.embedding_model)
+        except ImportError:
+            return []  # `embeddings` extra absent — recall-net unavailable
 
-    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-
-    query = " ".join(query_tokens)
-    query_vec = np.asarray(model.encode([query])[0], dtype=np.float32)
-    chunk_vecs = np.asarray(
-        model.encode([c for _, c in chunks]), dtype=np.float32
+    page_paths = [p.path for p in pages] if pages is not None else None
+    index = embeddings_mod.load_or_build(
+        docs_root,
+        cache_dir,
+        model_name=config.embedding_model,
+        encoder=enc,
+        page_paths=page_paths,
     )
-
-    def _cosine(a, b):
-        denom = (np.linalg.norm(a) * np.linalg.norm(b, axis=1))
-        denom = np.where(denom == 0.0, 1e-12, denom)
-        return (b @ a) / denom
-
-    sims = _cosine(query_vec, chunk_vecs)
-
-    # Reduce per-chunk similarities to a single best score per page.
-    best: dict[str, float] = {}
-    for (page_path, _chunk), sim in zip(chunks, sims):
-        val = float(sim)
-        if page_path not in best or val > best[page_path]:
-            best[page_path] = val
-
-    ranked = sorted(best.items(), key=lambda kv: kv[1], reverse=True)
-    candidates: list[ImpactCandidate] = []
-    for page_path, score in ranked:
-        if score < _EMBEDDING_FLOOR:
-            continue
-        candidates.append(
-            ImpactCandidate(
-                page_path=page_path,
-                source=CandidateSource.EMBEDDING,
-                score=score,
-                reason=f"semantic match (cos={score:.2f}) on: {', '.join(query_tokens[:8])}",
-            )
+    ranked = embeddings_mod.query_index(
+        index,
+        " ".join(query_tokens),
+        encoder=enc,
+        model_name=config.embedding_model,
+        top_k=top_k or config.embedding_top_k,
+        floor=config.embedding_floor,
+    )
+    return [
+        ImpactCandidate(
+            page_path=page_path,
+            source=CandidateSource.EMBEDDING,
+            score=score,
+            reason=f"semantic match (cos={score:.2f}) on: {', '.join(query_tokens[:8])}",
         )
-        if len(candidates) >= top_k:
-            break
-
-    return candidates
+        for page_path, score in ranked
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +339,7 @@ def map_impact(
     config: DocsyncConfig,
     *,
     use_embeddings: bool = False,
+    cache_dir: Path | None = None,
     client=None,
 ) -> list[ImpactedPage]:
     """Orchestrate the doc-impact pipeline.
@@ -400,10 +352,11 @@ def map_impact(
 
     if use_embeddings:
         anchored = {c.page_path for c in candidates}
-        # Bias the embedding scan toward manifest pages not already anchored.
-        remaining_pages = [p for p in manifest.pages if p.path not in anchored]
+        # Full-tree recall-net: scan EVERY page (not just manifest pages) so drift on
+        # pages the manifest doesn't anchor is still surfaced; drop already-anchored
+        # pages, and let the judge confirm the rest (embeddings never autopass).
         embedding_candidates = find_embedding_candidates(
-            diff, docs_root, remaining_pages or None, config
+            diff, docs_root, None, config, cache_dir=cache_dir
         )
         candidates.extend(
             c for c in embedding_candidates if c.page_path not in anchored

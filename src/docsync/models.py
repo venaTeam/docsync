@@ -117,6 +117,13 @@ class DocsyncConfig(BaseModel):
     # Identifier tokens that name source concepts but are too generic to embed well;
     # excluded from the embedding query (e.g. "self", "config", "value").
     stopword_symbols: list[str] = Field(default_factory=list)
+    # --- embeddings recall-net (optional; needs the `embeddings` extra) ---
+    # sentence-transformers model id used to embed doc chunks + the diff query.
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Minimum cosine similarity for an embedding candidate to be worth a judge call.
+    embedding_floor: float = 0.2
+    # Max embedding candidates surfaced per diff (before the judge filters them).
+    embedding_top_k: int = 5
 
 
 # ---------------------------------------------------------------------------
