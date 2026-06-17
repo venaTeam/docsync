@@ -142,6 +142,37 @@ def test_pipeline_drops_oversize_edit(docs_repo: Path):
     assert dropped and "validation" in dropped[0].note
 
 
+def test_pipeline_min_confidence_gates_edit(docs_repo: Path):
+    manifest = load_manifest(docs_repo)
+    # Disable anchor autopass so the page goes through the judge and carries the
+    # judge's confidence (anchor autopass would pin it to 1.0 and never gate).
+    config = DocsyncConfig(anchor_autopass=False)
+    edit = PageEdit(
+        edits=[
+            EditOp(
+                find="| POST | /alerts | Ingest an alert |",
+                replace=(
+                    "| POST | /alerts | Ingest an alert |\n"
+                    "| POST | /alerts/bulk | Bulk-ingest alerts |"
+                ),
+                rationale="new route",
+            )
+        ]
+    )
+    client = FakeClient(
+        JudgeVerdict(page_path="x", affected=True, confidence=0.6, reason="r"), edit
+    )
+
+    # Floor above the judge's 0.6 -> page skipped before the edit stage.
+    gated = pipeline.run(_diff(), docs_repo, config, manifest, min_confidence=0.8, client=client)
+    assert gated.changed() == []
+    assert any("below floor" in o.note for o in gated.outcomes)
+
+    # Floor below it -> the edit applies normally.
+    ok = pipeline.run(_diff(), docs_repo, config, manifest, min_confidence=0.5, client=client)
+    assert len(ok.changed()) == 1
+
+
 def test_pipeline_idempotency_cursor(docs_repo: Path):
     # The cursor itself is enforced by the CLI, but confirm the helper round-trips.
     save_cursors(docs_repo, {"keephq/keep-api-gateway": "bbbbbbbb"})

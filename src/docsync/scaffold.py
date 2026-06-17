@@ -47,6 +47,11 @@ def _config_template() -> str:
         'docs_root: "."\n'
         "# GitHub handles requested as reviewers on opened doc-update PRs.\n"
         "reviewers: []\n"
+        "# Labels applied to opened docs PRs (auto-created in this repo if missing).\n"
+        "pr_labels: [docsync]\n"
+        "# Ship-safety: skip the edit stage for pages below this impact confidence\n"
+        "# (0-1). 0 = off. Raise (e.g. 0.7) for a conservative first rollout.\n"
+        "min_edit_confidence: 0.0\n"
     )
 
 
