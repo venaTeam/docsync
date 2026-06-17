@@ -45,10 +45,18 @@ def run(
     use_embeddings: bool = typer.Option(False, help="Enable the embeddings recall-net."),
     check_links: bool = typer.Option(False, help="Run the mintlify broken-link soft gate."),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
+    backend: str = typer.Option(
+        "api",
+        help="LLM backend: 'api' (ANTHROPIC_API_KEY) or 'claude-code' "
+        "(dev: reuse the local Claude Code CLI auth, no API key).",
+    ),
 ):
     """Full pipeline: diff -> impact -> edits -> validate -> (PR | patch + report)."""
+    from .llm_backends import get_client
+
     config = cfg.load_config(docs_repo)
     manifest = cfg.load_manifest(docs_repo)
+    client = get_client(backend)
 
     diff = _build_diff(src_repo, base, head, pr_number, pr_title)
 
@@ -60,7 +68,7 @@ def run(
     docs_root = docs_repo / config.docs_root
     result = pipeline_mod.run(
         diff, docs_repo, config, manifest,
-        use_embeddings=use_embeddings, check_links=check_links,
+        use_embeddings=use_embeddings, check_links=check_links, client=client,
     )
     originals = {
         o.page_path: (docs_root / o.page_path).read_text(encoding="utf-8")

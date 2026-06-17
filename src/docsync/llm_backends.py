@@ -1,0 +1,162 @@
+"""Pluggable LLM backends.
+
+docsync's LLM stages (impact judge, edit generation) only depend on a tiny slice
+of the Anthropic client surface:
+
+    resp = client.messages.parse(model=..., system=[...], messages=[...],
+                                 output_format=SomePydanticModel, **ignored)
+    resp.parsed_output          # a validated SomePydanticModel instance
+
+The production backend is `anthropic.Anthropic()`. This module adds a **dev-only**
+backend, `ClaudeCodeClient`, that satisfies the same interface by shelling out to
+the local `claude` CLI in headless mode (`claude -p --output-format json`). It
+reuses your existing Claude Code authentication, so you can run the full pipeline
+for development WITHOUT an ANTHROPIC_API_KEY.
+
+Caveats (why this is dev-only, not the product path):
+  * No schema-enforced structured outputs — we prompt for JSON and validate with
+    pydantic ourselves, retrying once on a parse/validation miss.
+  * Per-call overhead: the CLI injects Claude Code's own system prompt/tooling, so
+    each call costs more tokens/latency than a raw API call.
+  * It bills your Claude Code subscription/credits; automated/batch use of
+    subscription auth has Terms-of-Service limits. Use for local dogfooding only.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+from typing import Any
+
+from pydantic import BaseModel, ValidationError
+
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def _system_text(system: Any) -> str:
+    """Flatten the SDK `system` arg (str or list of text blocks) to plain text."""
+    if system is None:
+        return ""
+    if isinstance(system, str):
+        return system
+    parts = []
+    for block in system:
+        if isinstance(block, dict):
+            parts.append(block.get("text", ""))
+        else:
+            parts.append(str(block))
+    return "\n\n".join(p for p in parts if p)
+
+
+def _user_text(messages: Any) -> str:
+    """Flatten the SDK `messages` arg to the concatenated user text."""
+    if not messages:
+        return ""
+    parts = []
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+    return "\n\n".join(parts)
+
+
+def _extract_json(text: str) -> str:
+    """Pull the JSON object out of the model's reply (handles ```json fences)."""
+    m = _FENCE_RE.search(text)
+    if m:
+        text = m.group(1)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError(f"no JSON object found in CLI reply: {text[:200]!r}")
+    return text[start : end + 1]
+
+
+class _Resp:
+    def __init__(self, parsed_output: BaseModel):
+        self.parsed_output = parsed_output
+
+
+class _Messages:
+    def __init__(self, default_model: str | None, cli: str, extra_args: list[str]):
+        self._default_model = default_model
+        self._cli = cli
+        self._extra_args = extra_args
+
+    def _run(self, model: str, system: str, prompt: str) -> str:
+        # Replace Claude Code's default prompt; pass the user prompt via STDIN so a
+        # long/multiline prompt is never mis-parsed as CLI args. The system prompt
+        # already forbids tools, so a pure JSON completion needs none.
+        cmd = [
+            self._cli, "-p",
+            "--output-format", "json",
+            "--model", model,
+            "--system-prompt", system,
+            *self._extra_args,
+        ]
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"claude CLI failed ({proc.returncode}): {proc.stderr.strip()}")
+        envelope = json.loads(proc.stdout)
+        if envelope.get("is_error"):
+            raise RuntimeError(f"claude CLI error: {envelope.get('result')}")
+        return envelope.get("result", "")
+
+    def parse(self, *, output_format: type[BaseModel], model: str | None = None,
+              system: Any = None, messages: Any = None, **_ignored: Any) -> _Resp:
+        """Mimic anthropic .messages.parse(..., output_format=Model) via the CLI."""
+        mdl = model or self._default_model or "claude-opus-4-8"
+        schema = json.dumps(output_format.model_json_schema(), separators=(",", ":"))
+        sys_text = (
+            _system_text(system)
+            + "\n\nYou are a JSON API. Respond with ONLY a single JSON object that "
+            "validates against the schema below — no prose, no code fences, no tools.\n"
+            f"JSON schema: {schema}"
+        )
+        user_text = _user_text(messages)
+
+        last_err: Exception | None = None
+        for _ in range(2):  # one retry on a parse/validation miss
+            raw = self._run(mdl, sys_text, user_text)
+            try:
+                obj = output_format.model_validate_json(_extract_json(raw))
+                return _Resp(obj)
+            except (ValueError, ValidationError) as exc:
+                last_err = exc
+                # Tighten the instruction on the retry.
+                user_text += "\n\nYour previous reply was not valid JSON for the schema. " \
+                             "Return ONLY the JSON object."
+        raise RuntimeError(f"claude CLI did not return schema-valid JSON: {last_err}")
+
+
+class ClaudeCodeClient:
+    """Dev backend: drop-in for `anthropic.Anthropic()` over the `claude` CLI.
+
+    Usage:
+        from docsync.llm_backends import ClaudeCodeClient
+        result = pipeline.run(diff, docs_repo, config, manifest, client=ClaudeCodeClient())
+    """
+
+    def __init__(self, default_model: str | None = None, cli: str | None = None,
+                 extra_args: list[str] | None = None):
+        resolved = cli or shutil.which("claude")
+        if not resolved:
+            raise RuntimeError("`claude` CLI not found on PATH — install Claude Code.")
+        self.messages = _Messages(default_model, resolved, extra_args or [])
+
+
+def get_client(backend: str):
+    """Factory: 'api' -> anthropic.Anthropic(); 'claude-code' -> ClaudeCodeClient()."""
+    if backend == "claude-code":
+        return ClaudeCodeClient()
+    if backend == "api":
+        import anthropic
+
+        return anthropic.Anthropic()
+    raise ValueError(f"unknown backend: {backend!r} (use 'api' or 'claude-code')")
