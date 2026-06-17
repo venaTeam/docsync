@@ -69,6 +69,63 @@ class CodeDiff(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Bootstrap — whole-repo ingest + doc planning (ingest.py / bootstrap.py)
+# ---------------------------------------------------------------------------
+
+
+class SourceUnit(BaseModel):
+    """One documentable source file, distilled to what the planner needs.
+
+    Lightweight by design: paths + symbol names only (no file bodies). A whole
+    service repo's worth of these has to fit in the planner's context, and the
+    excerpts are fetched per-page only at author time.
+    """
+
+    path: str  # repo-relative path, e.g. "src/routes/alerts.py"
+    kind: str  # coarse language/role tag: "python" | "typescript" | "other"
+    symbols: list[str] = Field(default_factory=list)  # top-level defs/classes/exports
+
+
+class RepoDigest(BaseModel):
+    """The lightweight, whole-repo snapshot bootstrap plans from."""
+
+    repo: str  # owner/name or local path (mirrors CodeDiff.repo)
+    root: str  # absolute path the units were walked from
+    units: list[SourceUnit] = Field(default_factory=list)
+
+    def all_symbols(self) -> list[str]:
+        seen: list[str] = []
+        for u in self.units:
+            for s in u.symbols:
+                if s not in seen:
+                    seen.append(s)
+        return seen
+
+
+class PlannedPage(BaseModel):
+    """One doc page the planner proposes to author (structured LLM output)."""
+
+    page_path: str  # new .mdx path relative to docs_root, e.g. "reference/alerts.mdx"
+    title: str
+    group: str = "Reference (docsync)"  # nav group to file the page under
+    summary: str = ""  # what the page should cover (steers the author stage)
+    source_paths: list[str] = Field(default_factory=list)  # units this page documents
+    symbols: list[str] = Field(default_factory=list)  # anchor symbols for the manifest
+
+
+class DocPlan(BaseModel):
+    """The planner's structured response: the set of pages to author."""
+
+    pages: list[PlannedPage] = Field(default_factory=list)
+
+
+class AuthoredPage(BaseModel):
+    """The author stage's structured response: one full MDX page body."""
+
+    content: str  # the complete .mdx file text (frontmatter + body)
+
+
+# ---------------------------------------------------------------------------
 # Config & manifest (config.py) — the page <-> source mapping
 # ---------------------------------------------------------------------------
 
@@ -273,7 +330,7 @@ class PageOutcome(BaseModel):
     """End-to-end result for one impacted page."""
 
     page_path: str
-    impacted: ImpactedPage
+    impacted: Optional[ImpactedPage] = None  # None for bootstrap-authored pages
     edit: Optional[PageEdit] = None
     validation: Optional[ValidationResult] = None
     new_content: Optional[str] = None  # patched file text, if edits applied & valid
@@ -287,4 +344,18 @@ class PipelineResult(BaseModel):
     usage: Optional[RunUsage] = None  # token/cost accounting for the run's LLM calls
 
     def changed(self) -> list[PageOutcome]:
+        return [o for o in self.outcomes if o.applied and o.new_content is not None]
+
+
+class BootstrapResult(BaseModel):
+    """End-to-end result of `docsync bootstrap` over one source repo."""
+
+    repo: str
+    plan: DocPlan = Field(default_factory=DocPlan)  # the (deduped, capped) plan
+    skipped: list[str] = Field(default_factory=list)  # planned paths dropped pre-author
+    outcomes: list[PageOutcome] = Field(default_factory=list)  # one per authored page
+    usage: Optional[RunUsage] = None
+
+    def authored(self) -> list[PageOutcome]:
+        """Pages that were authored, validated, and are ready to write."""
         return [o for o in self.outcomes if o.applied and o.new_content is not None]

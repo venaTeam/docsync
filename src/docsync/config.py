@@ -10,14 +10,22 @@ Layout (all lives in the docs repo, e.g. keep-developer-docs):
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from .models import DocsyncConfig, Manifest
+from .models import DocsyncConfig, Manifest, ManifestPage
 
 _yaml = YAML(typ="safe")
+
+# A SEPARATE round-trip instance for *editing* manifest.yml in place: it preserves
+# the file's curated comments and key order on dump (the safe `_yaml` above strips
+# them). Never merge through `_yaml` or the hand-authored manifest comments are lost.
+_rt_yaml = YAML()  # round-trip mode is the default
+_rt_yaml.preserve_quotes = True
+_rt_yaml.indent(mapping=2, sequence=4, offset=2)
 
 DOCSYNC_DIR = ".docsync"
 CONFIG_FILE = "config.yml"
@@ -48,6 +56,69 @@ def load_manifest(docs_repo: Path) -> Manifest:
         )
     data = _yaml.load(path.read_text()) or {}
     return Manifest.model_validate(data)
+
+
+# --- manifest merge (bootstrap: append anchors, comment-preserving) -----------
+
+
+def _manifest_page_dict(page: ManifestPage) -> dict:
+    """A plain ordered dict for one new manifest page (omitting default knobs)."""
+    sources: list[dict] = []
+    for s in page.sources:
+        src: dict = {"repo": s.repo}
+        if s.globs:
+            src["globs"] = list(s.globs)
+        if s.symbols:
+            src["symbols"] = list(s.symbols)
+        sources.append(src)
+    out: dict = {"path": page.path, "sources": sources}
+    # Only emit guardrails that differ from the model defaults, to keep the diff small.
+    if page.max_diff_lines != ManifestPage.model_fields["max_diff_lines"].default:
+        out["max_diff_lines"] = page.max_diff_lines
+    if page.allow_frontmatter_edit:
+        out["allow_frontmatter_edit"] = True
+    return out
+
+
+_FRESH_MANIFEST_HEADER = (
+    "# docsync manifest — maps each doc page to the source code it documents.\n"
+    "# Bootstrapped by `docsync bootstrap`; anchors drive impact mapping for the\n"
+    "# update pipeline. Run `docsync doctor` to keep them honest.\n"
+)
+
+
+def merge_manifest_pages(docs_repo: Path, pages: list[ManifestPage]) -> list[str]:
+    """Append `pages` to `.docsync/manifest.yml`, preserving existing comments.
+
+    Idempotent on `path`: a page already in the manifest is skipped. Creates the
+    manifest (with a header) if absent. Returns the page paths actually added.
+    """
+    path = docsync_dir(docs_repo) / MANIFEST_FILE
+    fresh = not path.exists()
+    data = {} if fresh else (_rt_yaml.load(path.read_text()) or {})
+    if not data.get("pages"):
+        data["pages"] = []
+
+    existing = {p.get("path") for p in data["pages"] if isinstance(p, dict)}
+    added: list[str] = []
+    for page in pages:
+        if page.path in existing:
+            continue
+        data["pages"].append(_manifest_page_dict(page))
+        existing.add(page.path)
+        added.append(page.path)
+
+    if not added and not fresh:
+        return []
+
+    buf = io.StringIO()
+    _rt_yaml.dump(data, buf)
+    content = buf.getvalue()
+    if fresh:
+        content = _FRESH_MANIFEST_HEADER + content
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return added
 
 
 # --- cursor (the only mutable persisted state; committed by the Action) -------

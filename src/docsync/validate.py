@@ -23,6 +23,10 @@ from docsync.models import ManifestPage, ValidationResult
 # treated as a botched / truncated edit rather than a legitimate trim.
 _TRUNCATION_MIN_RATIO = 0.5
 
+# A from-scratch page below this many characters is treated as a stub/failed
+# generation rather than a real page (no original to take a ratio against).
+_NEW_PAGE_MIN_CHARS = 200
+
 
 def get_adapter(page_path: str) -> DocAdapter:
     """Return the adapter that owns `page_path`.
@@ -79,6 +83,87 @@ def validate_page(
         failures=failures,
         warnings=warnings,
     )
+
+
+def validate_new_page(
+    page_path: str,
+    new_text: str,
+    adapter: DocAdapter,
+    *,
+    check_links: bool = False,
+    docs_root: Path | None = None,
+) -> ValidationResult:
+    """Validate a from-scratch page (bootstrap) with *absolute* gates.
+
+    There is no original to diff against, so the diff-based gates (frontmatter
+    freeze, structural signature, diff-size, truncation-ratio) don't apply. The
+    new-page battery instead asserts the page stands on its own:
+
+    Hard gates (any failure -> passed=False):
+      1. frontmatter parses AND `title` + `description` are present & non-empty.
+      2. component well-formedness — tags balanced and correctly nested
+         (`structural_problems`), and the fence count is even.
+      3. non-empty and at least `_NEW_PAGE_MIN_CHARS` long (not a stub).
+
+    Soft gate (passed stays True; appended to `.warnings`):
+      - broken-link findings — expected, since a bootstrap run cross-references
+        sibling pages authored in the same run.
+    """
+    failures: list[str] = []
+    warnings: list[str] = []
+
+    failures.extend(_check_frontmatter_complete(new_text, adapter))
+    failures.extend(_check_wellformed(new_text, adapter))
+    failures.extend(_check_even_fences(new_text, adapter))
+    failures.extend(_check_min_length(new_text))
+
+    if check_links and docs_root is not None:
+        warnings.extend(_check_links_soft(adapter, docs_root))
+
+    return ValidationResult(
+        page_path=page_path,
+        passed=len(failures) == 0,
+        failures=failures,
+        warnings=warnings,
+    )
+
+
+# ---------------------------------------------------------------------------
+# New-page gates (absolute — no original to compare against)
+# ---------------------------------------------------------------------------
+
+
+def _check_frontmatter_complete(new_text: str, adapter: DocAdapter) -> list[str]:
+    """Frontmatter must parse and carry non-empty values for every frozen key."""
+    try:
+        meta, _ = adapter.split_frontmatter(new_text)
+    except Exception as exc:  # noqa: BLE001
+        return [f"frontmatter does not parse: {exc}"]
+    failures: list[str] = []
+    for key in adapter.frontmatter_keys_to_freeze():
+        value = meta.get(key)
+        if not (isinstance(value, str) and value.strip()):
+            failures.append(f"missing or empty frontmatter {key!r}")
+    return failures
+
+
+def _check_even_fences(new_text: str, adapter: DocAdapter) -> list[str]:
+    """An odd number of ``` markers means an unterminated code fence."""
+    fence_count = adapter.structural_signature(new_text).get("fence_count", 0)
+    if fence_count % 2 != 0:
+        return [f"unbalanced code fences: {fence_count} ``` markers (must be even)"]
+    return []
+
+
+def _check_min_length(new_text: str) -> list[str]:
+    if not new_text or not new_text.strip():
+        return ["new content is empty"]
+    if len(new_text) < _NEW_PAGE_MIN_CHARS:
+        return [
+            f"new page looks like a stub: {len(new_text)} chars is under the "
+            f"{_NEW_PAGE_MIN_CHARS}-char minimum"
+        ]
+    return []
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ from typing import List, Optional
 
 import typer
 
+from . import bootstrap as bootstrap_mod
 from . import config as cfg
 from . import diff as diff_mod
 from . import pipeline as pipeline_mod
@@ -187,6 +188,94 @@ def run(
         typer.echo(f"docsync: PR -> {url}")
     else:
         patch = pr_mod.write_patch(docs_repo, docs_repo / "docsync.patch")
+        typer.echo(f"docsync: patch written to {patch}")
+
+
+@app.command()
+def bootstrap(
+    docs_repo: Path = typer.Option(..., help="Path to the docs repo checkout (writes go here)."),
+    src_repo: str = typer.Option(..., help="Local path to the service repo to document (read-only)."),
+    repo: Optional[str] = typer.Option(
+        None, help="Identifier stamped on manifest anchors (default: src repo dir name)."
+    ),
+    group: str = typer.Option(
+        bootstrap_mod.DEFAULT_NAV_GROUP, help="Nav group new pages are filed under."
+    ),
+    plan_only: bool = typer.Option(
+        False, help="Plan pages and print the outline only — no authoring (no Opus spend)."
+    ),
+    dry_run: bool = typer.Option(True, help="Compute + report only; do not write or open a PR."),
+    open_pr: bool = typer.Option(False, help="Branch, commit, push, and open a docs PR."),
+    max_pages: Optional[int] = typer.Option(
+        None, help="Cap authored pages (default: unbounded — author every planned page)."
+    ),
+    max_parallel: Optional[int] = typer.Option(
+        None, help="Max concurrent author requests. Overrides config.max_parallel_requests."
+    ),
+    force: bool = typer.Option(False, help="Overwrite existing page files (default: skip)."),
+    check_links: bool = typer.Option(False, help="Run the mintlify broken-link soft gate."),
+    report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
+    backend: str = typer.Option("api", help="LLM backend: 'api' or 'claude-code'."),
+):
+    """Generate docs FROM SCRATCH: ingest a repo -> plan -> author -> validate -> (PR | patch).
+
+    Reads `src_repo` read-only; writes new pages, a `docs.json` nav group, and
+    manifest anchors into `docs_repo` (point this at a shadow copy to keep the real
+    docs repo untouched).
+    """
+    from .llm_backends import get_client
+
+    src_path = Path(src_repo)
+    if not src_path.exists():
+        raise typer.BadParameter(f"--src-repo path does not exist: {src_repo}")
+
+    config = cfg.load_config(docs_repo)
+    if max_parallel is not None:
+        config.max_parallel_requests = max_parallel
+
+    client = get_client(backend)
+    result = bootstrap_mod.run_bootstrap(
+        src_path, docs_repo, config,
+        repo=repo, group=group, max_pages=max_pages,
+        check_links=check_links, plan_only=plan_only, client=client,
+    )
+
+    typer.echo(report_mod.bootstrap_console_summary(result))
+    body = report_mod.bootstrap_pr_body(result, group=group)
+    if report_path:
+        report_path.write_text(body, encoding="utf-8")
+        typer.echo(f"docsync: report written to {report_path}")
+
+    if plan_only:
+        typer.echo("docsync: plan-only — no pages authored.")
+        raise typer.Exit(0)
+
+    authored = result.authored()
+    if not authored:
+        typer.echo("docsync: no validated pages; nothing to write.")
+        raise typer.Exit(0)
+
+    if dry_run and not open_pr:
+        typer.echo("docsync: dry run — not writing. Use --no-dry-run / --open-pr to apply.")
+        raise typer.Exit(0)
+
+    written = bootstrap_mod.write_bootstrap(result, docs_repo, config, force=force)
+    typer.echo(f"docsync: wrote {len(written)} path(s) (pages + nav + manifest).")
+
+    if open_pr:
+        slug = (repo or result.repo).split("/")[-1]
+        url = pr_mod.open_pr(
+            docs_repo,
+            branch=f"docsync/bootstrap-{slug}",
+            title=f"docs: bootstrap documentation for {result.repo}",
+            body=body,
+            paths=written,
+            reviewers=config.reviewers,
+            labels=config.pr_labels,
+        )
+        typer.echo(f"docsync: PR -> {url}")
+    else:
+        patch = pr_mod.write_patch(docs_repo, docs_repo / "docsync-bootstrap.patch")
         typer.echo(f"docsync: patch written to {patch}")
 
 
