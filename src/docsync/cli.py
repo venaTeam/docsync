@@ -97,6 +97,11 @@ def run(
         help="Max concurrent LLM requests for the judge + edit stages. "
         "Overrides config.max_parallel_requests.",
     ),
+    preflight: bool = typer.Option(
+        True,
+        help="Pre-flight the manifest (doctor) and abort before any LLM spend if it "
+        "references doc pages that don't exist. --no-preflight to bypass.",
+    ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
     backend: str = typer.Option(
         "api",
@@ -111,6 +116,23 @@ def run(
     manifest = cfg.load_manifest(docs_repo)
     if max_parallel is not None:
         config.max_parallel_requests = max_parallel
+
+    # Pre-flight gate: a manifest page that no longer exists silently disables its
+    # anchor (a missed doc update reads as "no drift"). Catch it before any LLM spend.
+    if preflight:
+        from .scaffold import doctor as run_doctor
+
+        report = run_doctor(docs_repo, {})
+        if report.missing_pages:
+            typer.echo("docsync: preflight failed — manifest references missing page(s):")
+            for p in report.missing_pages:
+                typer.echo(f"  ✗ {p}")
+            typer.echo(
+                "Fix .docsync/manifest.yml (or restore the page); "
+                "rerun with --no-preflight to bypass."
+            )
+            raise typer.Exit(2)
+
     client = get_client(backend)
 
     diff = _resolve_diff(src_repo, base, head, pr_number, pr_title, from_event)

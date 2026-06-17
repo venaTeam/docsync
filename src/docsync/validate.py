@@ -66,6 +66,7 @@ def validate_page(
 
     failures.extend(_check_frontmatter(original_text, new_text, manifest_page, adapter))
     failures.extend(_check_structure(original_text, new_text, adapter))
+    failures.extend(_check_wellformed(new_text, adapter))
     failures.extend(_check_diff_size(original_text, new_text, manifest_page))
     failures.extend(_check_not_truncated(original_text, new_text))
 
@@ -142,6 +143,25 @@ def _check_structure(original_text: str, new_text: str, adapter: DocAdapter) -> 
         )
 
     return failures
+
+
+# ---------------------------------------------------------------------------
+# Hard gate 2b — component well-formedness (nesting / balance of the new text)
+# ---------------------------------------------------------------------------
+
+
+def _check_wellformed(new_text: str, adapter: DocAdapter) -> list[str]:
+    """Fail if the patched text has mis-nested or unbalanced components.
+
+    The signature gate (2) freezes *counts*; this catches edits that keep counts
+    equal but break nesting (a reordered/swapped tag pair). Defensive: the adapter
+    promises not to raise, but never let a structural check sink the pipeline.
+    """
+    try:
+        problems = adapter.structural_problems(new_text)
+    except Exception:  # noqa: BLE001
+        return []
+    return [f"malformed MDX structure: {p}" for p in problems]
 
 
 # ---------------------------------------------------------------------------

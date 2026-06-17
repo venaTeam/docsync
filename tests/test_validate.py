@@ -185,6 +185,33 @@ def test_deleting_one_fence_line_fails():
 
 
 # ---------------------------------------------------------------------------
+# Hard gate 2b — component well-formedness (nesting / balance)
+# ---------------------------------------------------------------------------
+
+
+def test_count_balanced_misnesting_fails_wellformed_gate():
+    # Counts stay equal (CardGroup 1/1, Card 1/1) but the nesting is broken — the
+    # signature gate passes, the new well-formedness gate must catch it.
+    original = _page_with_frontmatter("Hello", "<CardGroup><Card>x</Card></CardGroup>")
+    new = _page_with_frontmatter("Hello", "<CardGroup></Card><Card></CardGroup>")
+    result = validate_page(PAGE, original, new, ManifestPage(path=PAGE), _adapter())
+    assert not result.passed
+    assert any("malformed MDX" in f for f in result.failures)
+
+
+def test_structural_problems_ignores_tags_in_code():
+    a = _adapter()
+    assert a.structural_problems("```jsx\n<Card>\n```\nprose") == []
+    assert a.structural_problems("inline `<Card>` reference") == []
+
+
+def test_structural_problems_flags_unclosed_and_self_closing_ok():
+    a = _adapter()
+    assert a.structural_problems("<CardGroup><Card>x</CardGroup>")  # mis-nested/unclosed
+    assert a.structural_problems("<CardGroup><Card/></CardGroup>") == []  # self-closing ok
+
+
+# ---------------------------------------------------------------------------
 # Hard gate 3 — diff-size guardrail
 # ---------------------------------------------------------------------------
 

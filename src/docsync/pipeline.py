@@ -96,6 +96,10 @@ def run(
     else:
         to_edit, capped = eligible, []
 
+    # Cache the (run-invariant) diff as a shared prompt block when it pays off
+    # (multi-page + large diff). Primed on page 1 below, then read by the rest.
+    cache_diff = edits_mod.should_cache_diff(diff, len(to_edit))
+
     def _process_page(page) -> PageOutcome:
         """Run stages 4-5 for one page and return a self-contained outcome.
 
@@ -115,7 +119,7 @@ def run(
             try:
                 edit = edits_mod.generate_page_edit(
                     page.page_path, original, diff, page, manifest_page, config,
-                    client=client,
+                    cache_diff=cache_diff, client=client,
                 )
             except Exception as exc:  # API error etc. — record and move on
                 outcome.note = f"edit generation failed: {exc}"
@@ -173,6 +177,12 @@ def run(
     workers = max(1, min(config.max_parallel_requests, len(to_edit)))
     if workers <= 1:
         edited = [_process_page(p) for p in to_edit]
+    elif cache_diff:
+        # Prime the shared-diff cache on page 1 (serial), then fan out the rest so
+        # they read the cache instead of each re-writing the same diff block.
+        primed = _process_page(to_edit[0])
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            edited = [primed, *executor.map(_process_page, to_edit[1:])]
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             edited = list(executor.map(_process_page, to_edit))

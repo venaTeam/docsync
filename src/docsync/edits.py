@@ -25,6 +25,29 @@ from .models import (
 # and 8000 stays below the streaming threshold so a non-streaming parse is fine.
 _MAX_TOKENS = 8000
 
+# The edit model (Opus) has a large window, and more diff context improves edit
+# accuracy — render the diff with a generous cap, also so a big multi-file diff can
+# clear the cacheable-prefix floor (see _CACHE_DIFF_MIN_CHARS).
+_EDIT_DIFF_MAX_CHARS = 40_000
+
+# Only cache the shared diff block when the rendered diff is at least this many chars
+# (~4k tokens — the Opus/Haiku cacheable-prefix minimum). Below it, the API silently
+# won't cache, and a cache *write* without reads is a net loss.
+_CACHE_DIFF_MIN_CHARS = 16_000
+
+
+def should_cache_diff(diff: CodeDiff, n_pages: int) -> bool:
+    """Whether to cache the shared diff as a prompt block for this run.
+
+    Worth it only when (a) more than one page will be edited (so there are reads to
+    amortize the one cache write) and (b) the rendered diff clears the model's
+    ~4096-token cacheable-prefix floor. The pipeline primes the cache on page 1 before
+    fanning out the rest, so reads land within the 5-minute ephemeral window.
+    """
+    if n_pages <= 1:
+        return False
+    return len(render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)) >= _CACHE_DIFF_MIN_CHARS
+
 
 class EditApplicationError(Exception):
     """Raised when an edit op cannot be applied safely (not found, or ambiguous)."""
@@ -106,16 +129,33 @@ def build_edit_prompt(
     diff: CodeDiff,
     impacted: ImpactedPage,
     manifest_page: ManifestPage | None,
+    *,
+    rendered_diff: str | None = None,
+    include_diff: bool = True,
 ) -> tuple[str, str]:
     """Return `(system_prompt, user_prompt)`.
 
     Split out from `generate_page_edit` so tests can assert prompt content without
-    making an API call.
+    making an API call. `rendered_diff` reuses a pre-rendered diff (so it isn't
+    rendered twice); `include_diff=False` omits the diff from the user message — used
+    when it's supplied in a cached system block shared across the run's pages.
     """
     allow_frontmatter_edit = bool(
         manifest_page is not None and manifest_page.allow_frontmatter_edit
     )
     system_prompt = _build_system_prompt(allow_frontmatter_edit)
+    rendered = (
+        rendered_diff if rendered_diff is not None
+        else render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)
+    )
+
+    if include_diff:
+        code_change = f"# Code change\n\n{rendered}\n\n"
+    else:
+        code_change = (
+            "# Code change\n\nThe code change for this run is provided in the system "
+            "context above; edit this page to reflect it.\n\n"
+        )
 
     user_prompt = (
         f"# Documentation page: {page_path}\n\n"
@@ -124,8 +164,7 @@ def build_edit_prompt(
         f"Reason: {impacted.reason}\n\n"
         f"# Current page content\n\n"
         f"```mdx\n{page_text}\n```\n\n"
-        f"# Code change\n\n"
-        f"{render_diff(diff)}\n\n"
+        f"{code_change}"
         "Produce surgical find/replace edits to bring the page in line with this "
         "change, or an empty edits list with a no_change_reason if the page is not "
         "actually invalidated."
@@ -145,6 +184,7 @@ def generate_page_edit(
     impacted: ImpactedPage,
     manifest_page: ManifestPage | None,
     config: DocsyncConfig,
+    cache_diff: bool = False,
     client=None,
 ) -> PageEdit:
     """Ask Claude Opus 4.8 for surgical edits to align `page_text` with `diff`.
@@ -163,9 +203,26 @@ def generate_page_edit(
 
         client = anthropic.Anthropic()
 
+    rendered = render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)
     system_prompt, user_prompt = build_edit_prompt(
-        page_path, page_text, diff, impacted, manifest_page
+        page_path, page_text, diff, impacted, manifest_page,
+        rendered_diff=rendered, include_diff=not cache_diff,
     )
+
+    system_blocks: list[dict] = [
+        {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+    ]
+    if cache_diff:
+        # The diff is identical for every page in a run; put it in its own cached
+        # system block (byte-identical across pages) so pages 2..N read it instead of
+        # re-sending it. The pipeline primes this on page 1 before fanning out.
+        system_blocks.append(
+            {
+                "type": "text",
+                "text": f"# Code change (shared across all pages in this run)\n\n{rendered}",
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
 
     with cost.stage("edit"):
         resp = client.messages.parse(
@@ -173,13 +230,7 @@ def generate_page_edit(
             max_tokens=_MAX_TOKENS,
             thinking={"type": "adaptive"},
             output_config={"effort": config.models.edit_effort},
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
+            system=system_blocks,
             messages=[{"role": "user", "content": user_prompt}],
             output_format=PageEdit,
         )
