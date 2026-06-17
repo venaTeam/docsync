@@ -319,6 +319,10 @@ def eval(  # noqa: A001 - intentional command name
         f"docsync eval [{mode}]: P={report.precision:.2f} R={report.recall:.2f} "
         f"F1={report.f1:.2f} over {report.n_cases} case(s)"
     )
+    if report.usage and report.usage.calls:
+        from .cost import render_usage_console
+
+        typer.echo(render_usage_console(report.usage))
     if json_out:
         json_out.write_text(report.model_dump_json(indent=2), encoding="utf-8")
         typer.echo(f"docsync: eval report written to {json_out}")

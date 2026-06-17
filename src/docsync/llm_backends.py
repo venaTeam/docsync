@@ -79,8 +79,10 @@ def _extract_json(text: str) -> str:
 
 
 class _Resp:
-    def __init__(self, parsed_output: BaseModel):
+    def __init__(self, parsed_output: BaseModel, usage: Any = None):
         self.parsed_output = parsed_output
+        # The CLI envelope's token usage (dict), so MeteredClient can account for it.
+        self.usage = usage
 
 
 class _Messages:
@@ -89,7 +91,7 @@ class _Messages:
         self._cli = cli
         self._extra_args = extra_args
 
-    def _run(self, model: str, system: str, prompt: str) -> str:
+    def _run(self, model: str, system: str, prompt: str) -> tuple[str, Any]:
         # Replace Claude Code's default prompt; pass the user prompt via STDIN so a
         # long/multiline prompt is never mis-parsed as CLI args. The system prompt
         # already forbids tools, so a pure JSON completion needs none.
@@ -106,7 +108,7 @@ class _Messages:
         envelope = json.loads(proc.stdout)
         if envelope.get("is_error"):
             raise RuntimeError(f"claude CLI error: {envelope.get('result')}")
-        return envelope.get("result", "")
+        return envelope.get("result", ""), envelope.get("usage")
 
     def parse(self, *, output_format: type[BaseModel], model: str | None = None,
               system: Any = None, messages: Any = None, **_ignored: Any) -> _Resp:
@@ -123,10 +125,10 @@ class _Messages:
 
         last_err: Exception | None = None
         for _ in range(2):  # one retry on a parse/validation miss
-            raw = self._run(mdl, sys_text, user_text)
+            raw, usage = self._run(mdl, sys_text, user_text)
             try:
                 obj = output_format.model_validate_json(_extract_json(raw))
-                return _Resp(obj)
+                return _Resp(obj, usage=usage)
             except (ValueError, ValidationError) as exc:
                 last_err = exc
                 # Tighten the instruction on the retry.

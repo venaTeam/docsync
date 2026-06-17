@@ -200,6 +200,57 @@ class ValidationResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Cost / usage accounting (cost.py)
+# ---------------------------------------------------------------------------
+
+
+class ModelUsage(BaseModel):
+    """Accumulated token usage + estimated cost for one model across a run."""
+
+    model: str
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: float = 0.0
+
+    @property
+    def prompt_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens
+        )
+
+
+class RunUsage(BaseModel):
+    """Token + estimated-cost totals for one run, broken down per model.
+
+    `cost_usd` is computed from a built-in price table (see cost.py) and can drift
+    from the real bill — `estimated` is always True to flag that.
+    """
+
+    by_model: list[ModelUsage] = Field(default_factory=list)
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: float = 0.0
+    cache_hit_rate: float = 0.0  # cache_read / total prompt tokens, across the run
+    estimated: bool = True
+
+    @property
+    def prompt_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens
+        )
+
+
+# ---------------------------------------------------------------------------
 # Pipeline outcome (pipeline.py)
 # ---------------------------------------------------------------------------
 
@@ -219,6 +270,7 @@ class PageOutcome(BaseModel):
 class PipelineResult(BaseModel):
     diff: CodeDiff
     outcomes: list[PageOutcome] = Field(default_factory=list)
+    usage: Optional[RunUsage] = None  # token/cost accounting for the run's LLM calls
 
     def changed(self) -> list[PageOutcome]:
         return [o for o in self.outcomes if o.applied and o.new_content is not None]

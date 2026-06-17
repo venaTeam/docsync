@@ -15,6 +15,7 @@ from pathlib import Path
 from . import critique as critique_mod
 from . import edits as edits_mod
 from .config import DOCSYNC_DIR
+from .cost import MeteredClient, UsageMeter
 from .impact import map_impact
 from .models import (
     CodeDiff,
@@ -43,15 +44,27 @@ def run(
     check_links: bool = False,
     self_critique: bool = False,
     client=None,
+    meter: UsageMeter | None = None,
 ) -> PipelineResult:
     """Map the diff to impacted pages, generate + validate edits for each.
 
     Returns a PipelineResult; `result.changed()` lists pages with applied,
     validated edits ready to be written to disk and opened as a PR.
+
+    All LLM calls (judge, edit, critique) go through one injected `client`; it is
+    wrapped in a `MeteredClient` so the run's token usage + estimated cost land on
+    `result.usage`. Pass a shared `meter` to accumulate across multiple runs (eval).
     """
     docs_repo = Path(docs_repo)
     docs_root = docs_repo / config.docs_root
     result = PipelineResult(diff=diff)
+
+    # Meter every LLM call by wrapping the client once, here. When no client is
+    # supplied the stages lazily build their own (unmetered) client; the CLI and
+    # eval always pass one, so real runs are always accounted for.
+    meter = meter or UsageMeter()
+    if client is not None:
+        client = MeteredClient(client, meter)
 
     # Persist the embeddings index here so repeated runs reuse it (CI caches this dir).
     cache_dir = docs_repo / DOCSYNC_DIR / "state" / "embeddings"
@@ -140,6 +153,7 @@ def run(
         outcome.note = "ready"
         result.outcomes.append(outcome)
 
+    result.usage = meter.finalize()
     return result
 
 
