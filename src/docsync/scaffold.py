@@ -52,6 +52,10 @@ def _config_template() -> str:
         "# Ship-safety: skip the edit stage for pages below this impact confidence\n"
         "# (0-1). 0 = off. Raise (e.g. 0.7) for a conservative first rollout.\n"
         "min_edit_confidence: 0.0\n"
+        "# Max concurrent LLM requests across the judge + edit stages.\n"
+        "max_parallel_requests: 4\n"
+        "# Cap on pages edited per run (0 = unlimited); highest-confidence first.\n"
+        "max_pages_per_run: 0\n"
     )
 
 

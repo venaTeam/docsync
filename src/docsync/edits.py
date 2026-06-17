@@ -11,6 +11,8 @@ This module is the only place that talks to the Anthropic SDK for edit generatio
 
 from __future__ import annotations
 
+from . import cost
+from .diffrender import render_diff
 from .models import (
     CodeDiff,
     DocsyncConfig,
@@ -18,10 +20,6 @@ from .models import (
     ManifestPage,
     PageEdit,
 )
-
-# Keep the rendered diff bounded so a giant PR can't blow up the prompt. The
-# whole per-file diff section is capped at this many characters.
-_MAX_DIFF_CHARS = 12_000
 
 # Max tokens for the parse call. Edits are small (a handful of find/replace ops),
 # and 8000 stays below the streaming threshold so a non-streaming parse is fine.
@@ -102,31 +100,6 @@ def _build_system_prompt(allow_frontmatter_edit: bool) -> str:
     return "\n".join(lines)
 
 
-def _render_diff(diff: CodeDiff) -> str:
-    """A compact rendering of the diff, capped at ~_MAX_DIFF_CHARS characters."""
-    header = f"repo: {diff.repo}\npr_title: {diff.pr_title or '(none)'}\n"
-    parts: list[str] = []
-    used = len(header)
-    for f in diff.files:
-        symbols = ", ".join(f.changed_symbols) or "(none)"
-        section_lines = [
-            f"\n## file: {f.path} ({f.status.value})",
-            f"changed symbols: {symbols}",
-        ]
-        for hunk in f.hunks:
-            section_lines.append(hunk)
-        section = "\n".join(section_lines)
-        if used + len(section) > _MAX_DIFF_CHARS:
-            remaining = _MAX_DIFF_CHARS - used
-            if remaining > 0:
-                parts.append(section[:remaining])
-            parts.append("\n... (diff truncated)")
-            break
-        parts.append(section)
-        used += len(section)
-    return header + "".join(parts)
-
-
 def build_edit_prompt(
     page_path: str,
     page_text: str,
@@ -152,7 +125,7 @@ def build_edit_prompt(
         f"# Current page content\n\n"
         f"```mdx\n{page_text}\n```\n\n"
         f"# Code change\n\n"
-        f"{_render_diff(diff)}\n\n"
+        f"{render_diff(diff)}\n\n"
         "Produce surgical find/replace edits to bring the page in line with this "
         "change, or an empty edits list with a no_change_reason if the page is not "
         "actually invalidated."
@@ -194,19 +167,20 @@ def generate_page_edit(
         page_path, page_text, diff, impacted, manifest_page
     )
 
-    resp = client.messages.parse(
-        model=config.models.edit_model,
-        max_tokens=_MAX_TOKENS,
-        thinking={"type": "adaptive"},
-        output_config={"effort": config.models.edit_effort},
-        system=[
-            {
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_prompt}],
-        output_format=PageEdit,
-    )
+    with cost.stage("edit"):
+        resp = client.messages.parse(
+            model=config.models.edit_model,
+            max_tokens=_MAX_TOKENS,
+            thinking={"type": "adaptive"},
+            output_config={"effort": config.models.edit_effort},
+            system=[
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
+            output_format=PageEdit,
+        )
     return resp.parsed_output

@@ -121,6 +121,12 @@ class DocsyncConfig(BaseModel):
     min_edit_confidence: float = 0.0
     # Labels applied to opened docs PRs (auto-created in the docs repo if missing).
     pr_labels: list[str] = Field(default_factory=lambda: ["docsync"])
+    # Max concurrent LLM requests for the judge + edit stages (a real PR touches
+    # several pages; they're independent). Kept low to respect fresh-org rate limits.
+    max_parallel_requests: int = 4
+    # Hard cap on pages sent to the (expensive) edit stage per run; 0 = unlimited.
+    # Highest-confidence pages are edited first; the rest are reported, not edited.
+    max_pages_per_run: int = 0
     # Identifier tokens that name source concepts but are too generic to embed well;
     # excluded from the embedding query (e.g. "self", "config", "value").
     stopword_symbols: list[str] = Field(default_factory=list)
@@ -212,9 +218,10 @@ class ValidationResult(BaseModel):
 
 
 class ModelUsage(BaseModel):
-    """Accumulated token usage + estimated cost for one model across a run."""
+    """Accumulated token usage + estimated cost for one (model, stage) across a run."""
 
     model: str
+    stage: Optional[str] = None  # "judge" | "edit" | "critique" | None (unattributed)
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0

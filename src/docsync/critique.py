@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from . import cost
+from .diffrender import render_diff
 from .models import CodeDiff, EditOp, PageEdit
 
 # Default judge model — the cheap second-opinion model (Haiku).
@@ -25,9 +27,6 @@ _JUDGE_MODEL = "claude-haiku-4-5"
 # find strings, and a reason), so a small budget keeps this call cheap and
 # non-streaming.
 _MAX_TOKENS = 2000
-
-# Keep the rendered diff bounded so a giant PR can't blow up the prompt.
-_MAX_DIFF_CHARS = 12_000
 
 
 # ---------------------------------------------------------------------------
@@ -52,30 +51,6 @@ class CritiqueVerdict(BaseModel):
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
-
-
-def _render_diff(diff: CodeDiff) -> str:
-    """A compact rendering of the diff, capped at ~_MAX_DIFF_CHARS characters."""
-    header = f"repo: {diff.repo}\npr_title: {diff.pr_title or '(none)'}\n"
-    parts: list[str] = []
-    used = len(header)
-    for f in diff.files:
-        symbols = ", ".join(f.changed_symbols) or "(none)"
-        section_lines = [
-            f"\n## file: {f.path} ({f.status.value})",
-            f"changed symbols: {symbols}",
-        ]
-        section_lines.extend(f.hunks)
-        section = "\n".join(section_lines)
-        if used + len(section) > _MAX_DIFF_CHARS:
-            remaining = _MAX_DIFF_CHARS - used
-            if remaining > 0:
-                parts.append(section[:remaining])
-            parts.append("\n... (diff truncated)")
-            break
-        parts.append(section)
-        used += len(section)
-    return header + "".join(parts)
 
 
 def _render_ops(page_edit: PageEdit) -> str:
@@ -111,7 +86,7 @@ def build_critique_prompt(
         f"# Code change\n\n"
         f"changed paths: {changed_paths}\n"
         f"changed symbols: {changed_symbols}\n\n"
-        f"{_render_diff(diff)}\n\n"
+        f"{render_diff(diff)}\n\n"
         f"# Proposed edit ops\n\n"
         f"{_render_ops(page_edit)}\n\n"
         "For each op, decide whether it is DIRECTLY justified by the diff above. "
@@ -170,19 +145,20 @@ def critique_page_edit(
 
     user_prompt = build_critique_prompt(diff, page_path, page_edit)
 
-    resp = client.messages.parse(
-        model=model or _JUDGE_MODEL,
-        max_tokens=_MAX_TOKENS,
-        system=[
-            {
-                "type": "text",
-                "text": system_text,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_prompt}],
-        output_format=CritiqueVerdict,
-    )
+    with cost.stage("critique"):
+        resp = client.messages.parse(
+            model=model or _JUDGE_MODEL,
+            max_tokens=_MAX_TOKENS,
+            system=[
+                {
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
+            output_format=CritiqueVerdict,
+        )
     return resp.parsed_output
 
 

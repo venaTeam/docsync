@@ -173,6 +173,71 @@ def test_pipeline_min_confidence_gates_edit(docs_repo: Path):
     assert len(ok.changed()) == 1
 
 
+TWO_PAGE_MANIFEST = """\
+pages:
+  - path: a.mdx
+    sources:
+      - repo: keephq/keep-api-gateway
+        globs: ["src/routes/router_setup.py"]
+        symbols: ["setup_routers"]
+    max_diff_lines: 40
+  - path: b.mdx
+    sources:
+      - repo: keephq/keep-api-gateway
+        globs: ["src/routes/router_setup.py"]
+        symbols: ["setup_routers"]
+    max_diff_lines: 40
+"""
+
+PAGE_AB = '---\ntitle: "T"\ndescription: "D"\n---\n\nThe OLD value.\n'
+
+
+@pytest.fixture()
+def two_page_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.mdx").write_text(PAGE_AB, encoding="utf-8")
+    (root / "b.mdx").write_text(PAGE_AB, encoding="utf-8")
+    (root / ".docsync").mkdir()
+    (root / ".docsync" / "manifest.yml").write_text(TWO_PAGE_MANIFEST, encoding="utf-8")
+    return root
+
+
+def _ab_client() -> FakeClient:
+    edit = PageEdit(
+        edits=[EditOp(find="The OLD value.", replace="The NEW value.", rationale="r")]
+    )
+    return FakeClient(
+        JudgeVerdict(page_path="x", affected=True, confidence=0.9, reason="r"), edit
+    )
+
+
+def test_pipeline_max_pages_cap(two_page_repo: Path):
+    # Both pages anchor-autopass (confidence 1.0); cap=1 edits the first (sorted),
+    # reports the second without an edit call.
+    manifest = load_manifest(two_page_repo)
+    result = pipeline.run(
+        _diff(), two_page_repo, DocsyncConfig(), manifest,
+        max_pages=1, client=_ab_client(),
+    )
+    assert [o.page_path for o in result.changed()] == ["a.mdx"]
+    capped = [o for o in result.outcomes if "cap" in o.note]
+    assert [o.page_path for o in capped] == ["b.mdx"]
+    assert capped[0].applied is False
+
+
+def test_pipeline_parallel_is_deterministic(two_page_repo: Path):
+    # max_parallel 4 + 2 pages -> the thread-pool path; map() preserves order.
+    manifest = load_manifest(two_page_repo)
+    config = DocsyncConfig(max_parallel_requests=4)
+    r1 = pipeline.run(_diff(), two_page_repo, config, manifest, client=_ab_client())
+    r2 = pipeline.run(_diff(), two_page_repo, config, manifest, client=_ab_client())
+
+    order1 = [o.page_path for o in r1.outcomes]
+    assert order1 == [o.page_path for o in r2.outcomes] == ["a.mdx", "b.mdx"]
+    assert len(r1.changed()) == 2
+
+
 def test_pipeline_idempotency_cursor(docs_repo: Path):
     # The cursor itself is enforced by the CLI, but confirm the helper round-trips.
     save_cursors(docs_repo, {"keephq/keep-api-gateway": "bbbbbbbb"})
