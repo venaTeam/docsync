@@ -40,8 +40,9 @@ from typing import Callable, Optional
 from pydantic import BaseModel, Field
 
 from .config import DOCSYNC_DIR
+from .cost import UsageMeter
 from .impact import find_anchor_candidates, find_embedding_candidates
-from .models import CodeDiff, DocsyncConfig, Manifest
+from .models import CodeDiff, DocsyncConfig, Manifest, RunUsage
 
 # A diff builder: (repo, base, head) -> CodeDiff. Injectable so tests avoid the
 # network; defaults to the real GitHub path in :func:`run_eval`.
@@ -83,6 +84,7 @@ class EvalReport(BaseModel):
     recall: float = 0.0
     f1: float = 0.0
     n_cases: int = 0
+    usage: Optional[RunUsage] = None  # accumulated LLM cost (mode="full" only)
 
 
 # ---------------------------------------------------------------------------
@@ -172,12 +174,17 @@ def _full_actual_pages(
     manifest: Manifest,
     client,
     use_embeddings: bool = False,
+    meter: Optional[UsageMeter] = None,
 ) -> list[str]:
-    """mode="full": sorted page paths the LLM pipeline actually edits."""
+    """mode="full": sorted page paths the LLM pipeline actually edits.
+
+    A shared `meter` accumulates token/cost usage across every case.
+    """
     from . import pipeline  # local import: keep the LLM path off the map-mode hot path
 
     result = pipeline.run(
-        diff, docs_repo, config, manifest, use_embeddings=use_embeddings, client=client
+        diff, docs_repo, config, manifest,
+        use_embeddings=use_embeddings, client=client, meter=meter,
     )
     return sorted(o.page_path for o in result.changed())
 
@@ -217,6 +224,7 @@ def run_eval(
 
     docs_root = Path(docs_repo) / config.docs_root
     cache_dir = Path(docs_repo) / DOCSYNC_DIR / "state" / "embeddings"
+    meter = UsageMeter() if mode == "full" else None
 
     results: list[CaseResult] = []
     for case in cases:
@@ -232,7 +240,7 @@ def run_eval(
             else:
                 actual = _full_actual_pages(
                     diff, docs_repo, config, manifest, client,
-                    use_embeddings=use_embeddings,
+                    use_embeddings=use_embeddings, meter=meter,
                 )
             label = case.label
         except Exception as exc:  # noqa: BLE001 — one bad case must not kill the run
@@ -259,4 +267,5 @@ def run_eval(
         recall=recall,
         f1=f1,
         n_cases=len(results),
+        usage=meter.finalize() if meter is not None else None,
     )

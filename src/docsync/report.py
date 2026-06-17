@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 
+from .cost import render_usage_console, render_usage_md
 from .models import PipelineResult
 
 
@@ -63,6 +64,11 @@ def pr_body(result: PipelineResult, *, original_texts: dict[str, str] | None = N
             lines.append(f"- `{o.page_path}` — {o.note}")
         lines.append("")
 
+    usage_lines = render_usage_md(result.usage)
+    if usage_lines:
+        lines.extend(usage_lines)
+        lines.append("")
+
     lines.append("---")
     lines.append("_Opened by [docsync](https://github.com/keephq/docsync). Review the edits "
                  "before merging — docsync edits existing pages only; new pages / nav changes "
@@ -77,4 +83,7 @@ def console_summary(result: PipelineResult) -> str:
     for o in result.outcomes:
         mark = "✓" if o.applied else "·"
         out.append(f"  {mark} {o.page_path} — {o.note}")
+    cost_line = render_usage_console(result.usage)
+    if cost_line:
+        out.append(cost_line)
     return "\n".join(out)
