@@ -71,7 +71,11 @@ def run(
     pr_title: Optional[str] = typer.Option(None),
     dry_run: bool = typer.Option(True, help="Compute + report only; do not write or open a PR."),
     open_pr: bool = typer.Option(False, help="Branch, commit, push, and open a docs PR."),
-    use_embeddings: bool = typer.Option(False, help="Enable the embeddings recall-net."),
+    use_embeddings: bool = typer.Option(
+        True,
+        help="Embeddings recall-net: also surface drift on pages the manifest doesn't "
+        "anchor. Degrades to anchors-only if the embeddings extra isn't installed.",
+    ),
     check_links: bool = typer.Option(False, help="Run the mintlify broken-link soft gate."),
     self_critique: bool = typer.Option(
         False,
@@ -82,6 +86,16 @@ def run(
         None,
         help="Skip the edit stage for pages below this impact confidence (0-1). "
         "Overrides config.min_edit_confidence; use for a conservative first rollout.",
+    ),
+    max_pages: Optional[int] = typer.Option(
+        None,
+        help="Cap pages sent to the edit stage (highest-confidence first; the rest "
+        "are reported, not edited). Overrides config.max_pages_per_run.",
+    ),
+    max_parallel: Optional[int] = typer.Option(
+        None,
+        help="Max concurrent LLM requests for the judge + edit stages. "
+        "Overrides config.max_parallel_requests.",
     ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
     backend: str = typer.Option(
@@ -95,6 +109,8 @@ def run(
 
     config = cfg.load_config(docs_repo)
     manifest = cfg.load_manifest(docs_repo)
+    if max_parallel is not None:
+        config.max_parallel_requests = max_parallel
     client = get_client(backend)
 
     diff = _resolve_diff(src_repo, base, head, pr_number, pr_title, from_event)
@@ -108,7 +124,8 @@ def run(
     result = pipeline_mod.run(
         diff, docs_repo, config, manifest,
         use_embeddings=use_embeddings, check_links=check_links,
-        self_critique=self_critique, min_confidence=min_confidence, client=client,
+        self_critique=self_critique, min_confidence=min_confidence,
+        max_pages=max_pages, client=client,
     )
     originals = {
         o.page_path: (docs_root / o.page_path).read_text(encoding="utf-8")

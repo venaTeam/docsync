@@ -17,8 +17,10 @@ A hybrid, anchor-first mapper:
 from __future__ import annotations
 
 import fnmatch
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import cost
 from . import embeddings as embeddings_mod
 from .models import (
     CandidateSource,
@@ -257,56 +259,61 @@ def judge_candidates(
 ) -> list[JudgeVerdict]:
     """Ask the Haiku judge whether each candidate page is truly affected.
 
-    One page per API call (Haiku judges a single page at a time). Uses the SDK's
-    structured-output helper (`messages.parse`). `client` is injectable for tests;
-    defaults to `anthropic.Anthropic()`. A failed call yields a non-affected verdict
-    (confidence 0) so one failure doesn't abort the run.
+    One page per API call (Haiku judges a single page at a time). Candidates are
+    independent, so they're judged concurrently (bounded by
+    `config.max_parallel_requests`); `ThreadPoolExecutor.map` preserves input order
+    so the returned verdicts align with `candidates`. Uses the SDK's structured-output
+    helper (`messages.parse`). `client` is injectable for tests; defaults to
+    `anthropic.Anthropic()`. A failed call yields a non-affected verdict (confidence 0)
+    so one failure doesn't abort the run.
     """
+    if not candidates:
+        return []
+
     if client is None:
         import anthropic
 
         client = anthropic.Anthropic()
 
-    verdicts: list[JudgeVerdict] = []
-    for candidate in candidates:
+    def _judge_one(candidate: ImpactCandidate) -> JudgeVerdict:
         page_text = _read_page_text(docs_root, candidate.page_path)
         try:
-            resp = client.messages.parse(
-                model=config.models.judge_model,
-                max_tokens=1024,
-                system=[
-                    {
-                        "type": "text",
-                        "text": _JUDGE_SYSTEM,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[
-                    {
-                        "role": "user",
-                        "content": _judge_user_message(diff, candidate, page_text),
-                    }
-                ],
-                output_format=JudgeVerdict,
-            )
-            verdict = resp.parsed_output
-            # The model may not echo the page_path; pin it to the candidate's.
-            if not verdict.page_path:
-                verdict.page_path = candidate.page_path
-            else:
-                verdict.page_path = candidate.page_path
-            verdicts.append(verdict)
-        except Exception as exc:  # noqa: BLE001 — one failure must not kill the run
-            verdicts.append(
-                JudgeVerdict(
-                    page_path=candidate.page_path,
-                    affected=False,
-                    confidence=0.0,
-                    reason=f"judge call failed: {type(exc).__name__}: {exc}",
+            with cost.stage("judge"):
+                resp = client.messages.parse(
+                    model=config.models.judge_model,
+                    max_tokens=1024,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": _JUDGE_SYSTEM,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": _judge_user_message(diff, candidate, page_text),
+                        }
+                    ],
+                    output_format=JudgeVerdict,
                 )
+            verdict = resp.parsed_output
+            # The model may omit or echo page_path; pin it to the candidate's.
+            verdict.page_path = candidate.page_path
+            return verdict
+        except Exception as exc:  # noqa: BLE001 — one failure must not kill the run
+            return JudgeVerdict(
+                page_path=candidate.page_path,
+                affected=False,
+                confidence=0.0,
+                reason=f"judge call failed: {type(exc).__name__}: {exc}",
             )
 
-    return verdicts
+    workers = max(1, min(config.max_parallel_requests, len(candidates)))
+    if workers == 1:
+        return [_judge_one(c) for c in candidates]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(_judge_one, candidates))
 
 
 # ---------------------------------------------------------------------------
