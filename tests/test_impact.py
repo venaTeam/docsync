@@ -393,3 +393,53 @@ def test_page_text_is_read_and_passed_to_judge(tmp_path: Path):
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_anchor_matches_local_path_against_canonical_repo():
+    """Regression: a local checkout path must reconcile with a manifest's owner/name.
+
+    Found by dogfooding `docsync map` against the real Keep repos — diff_local sets
+    repo to the checkout path, which must still match `keephq/keep-api-gateway`.
+    """
+    from docsync.models import (
+        ChangedFile,
+        CodeDiff,
+        FileStatus,
+        Manifest,
+        ManifestPage,
+        ManifestSource,
+    )
+    from docsync.impact import find_anchor_candidates
+
+    diff = CodeDiff(
+        repo="/Users/dev/keep-namespace/keep-api-gateway",  # local path, not owner/name
+        base_sha="a",
+        head_sha="b",
+        files=[
+            ChangedFile(
+                path="src/config/config.py",
+                status=FileStatus.MODIFIED,
+                changed_symbols=["KEEP_EXTRACT_IDENTITY"],
+            )
+        ],
+    )
+    manifest = Manifest(
+        pages=[
+            ManifestPage(
+                path="services/api-gateway.mdx",
+                sources=[
+                    ManifestSource(
+                        repo="keephq/keep-api-gateway",
+                        globs=["src/config/config.py"],
+                        symbols=["KEEP_*"],
+                    )
+                ],
+            )
+        ]
+    )
+    cands = find_anchor_candidates(diff, manifest)
+    assert [c.page_path for c in cands] == ["services/api-gateway.mdx"]
+
+    # A genuinely different repo must NOT match (basename differs).
+    diff2 = diff.model_copy(update={"repo": "keephq/keep-ui"})
+    assert find_anchor_candidates(diff2, manifest) == []

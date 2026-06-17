@@ -60,6 +60,24 @@ def _symbol_matches(changed: str, pattern: str) -> bool:
     return changed == pattern
 
 
+def _repo_key(repo: str) -> str:
+    """Normalize a repo reference to its bare name for scoping.
+
+    A manifest source uses the canonical ``owner/name``, but a diff's ``repo``
+    can be a local checkout path (CLI dogfood), a fork ``otherowner/name``, or
+    ``owner/name`` (gh path). Comparing the final path component reconciles all
+    three so the same anchor matches regardless of how the diff was produced.
+    """
+    key = repo.rstrip("/").rsplit("/", 1)[-1]
+    if key.endswith(".git"):
+        key = key[:-4]
+    return key.lower()
+
+
+def _repo_matches(source_repo: str, diff_repo: str) -> bool:
+    return _repo_key(source_repo) == _repo_key(diff_repo)
+
+
 def find_anchor_candidates(diff: CodeDiff, manifest: Manifest) -> list[ImpactCandidate]:
     """Match the diff against each manifest page's declared sources.
 
@@ -77,7 +95,7 @@ def find_anchor_candidates(diff: CodeDiff, manifest: Manifest) -> list[ImpactCan
         symbol_hits: list[str] = []
 
         for source in page.sources:
-            if source.repo != diff.repo:
+            if not _repo_matches(source.repo, diff.repo):
                 continue  # repo-scoped: a source for another repo can't match this diff
 
             for glob in source.globs:
