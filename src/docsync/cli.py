@@ -168,7 +168,13 @@ def map(  # noqa: A001 - intentional command name
     for c in anchors:
         typer.echo(f"  · {c.page_path}  [score {c.score:.0f}]  {c.reason}")
     if use_embeddings:
-        emb = find_embedding_candidates(diff, docs_root, manifest.pages, config)
+        anchored = {c.page_path for c in anchors}
+        cache_dir = docs_repo / cfg.DOCSYNC_DIR / "state" / "embeddings"
+        # Full-tree recall-net (scan all pages), excluding already-anchored ones.
+        emb = [
+            c for c in find_embedding_candidates(diff, docs_root, None, config, cache_dir=cache_dir)
+            if c.page_path not in anchored
+        ]
         typer.echo(f"Embedding candidates ({len(emb)}):")
         for c in emb:
             typer.echo(f"  · {c.page_path}  [sim {c.score:.2f}]  {c.reason}")
@@ -178,24 +184,32 @@ def map(  # noqa: A001 - intentional command name
 def index(
     docs_repo: Path = typer.Option(...),
 ):
-    """Build/refresh the embeddings index (optional recall-net).
+    """Build/refresh + persist the embeddings index (optional recall-net).
 
-    No-op-friendly: if sentence-transformers isn't installed, reports that and exits 0.
+    Encodes every page once and caches it under .docsync/state/embeddings, so later
+    runs reuse it unless the docs change. If the `embeddings` extra isn't installed,
+    reports that and exits 0.
     """
-    config = cfg.load_config(docs_repo)
-    manifest = cfg.load_manifest(docs_repo)
-    docs_root = docs_repo / config.docs_root
-    # find_embedding_candidates builds the index on demand; calling it with an empty
-    # diff just exercises/install-checks the path.
-    from .models import CodeDiff
+    from . import embeddings as embeddings_mod
 
-    empty = CodeDiff(repo="_", base_sha="0", head_sha="0")
-    out = find_embedding_candidates(empty, docs_root, manifest.pages, config)
-    if not out:
-        typer.echo("docsync: embeddings unavailable or no candidates "
+    config = cfg.load_config(docs_repo)
+    docs_root = docs_repo / config.docs_root
+    cache_dir = docs_repo / cfg.DOCSYNC_DIR / "state" / "embeddings"
+    try:
+        encoder = embeddings_mod.default_encoder(config.embedding_model)
+    except ImportError:
+        typer.echo("docsync: embeddings extra not installed "
                    "(install with `poetry install -E embeddings`).")
-    else:
-        typer.echo("docsync: embeddings index ready.")
+        raise typer.Exit(0) from None
+
+    idx = embeddings_mod.load_or_build(
+        docs_root, cache_dir, model_name=config.embedding_model, encoder=encoder
+    )
+    pages = len(set(idx.page_paths))
+    typer.echo(
+        f"docsync: embeddings index ready — {len(idx.page_paths)} chunk(s) across "
+        f"{pages} page(s), cached at {cache_dir}."
+    )
 
 
 @app.command()
@@ -272,6 +286,7 @@ def eval(  # noqa: A001 - intentional command name
     docs_repo: Path = typer.Option(..., help="Docs repo with .docsync/manifest.yml."),
     golden: Path = typer.Option(..., help="Golden-set JSON of labeled PRs (repo/base/head/expected_pages)."),
     mode: str = typer.Option("map", help="'map' (free anchor mapping) or 'full' (LLM edit pipeline)."),
+    use_embeddings: bool = typer.Option(False, help="Also use the embeddings recall-net when mapping."),
     backend: str = typer.Option("api", help="LLM backend for --mode full: 'api' or 'claude-code'."),
     json_out: Optional[Path] = typer.Option(None, help="Write the full EvalReport JSON here."),
 ):
@@ -292,7 +307,10 @@ def eval(  # noqa: A001 - intentional command name
 
         client = get_client(backend)
 
-    report = run_eval(cases, docs_repo, config, manifest, mode=mode, client=client)
+    report = run_eval(
+        cases, docs_repo, config, manifest,
+        mode=mode, use_embeddings=use_embeddings, client=client,
+    )
     for c in report.cases:
         mark = "✓" if (c.fp == 0 and c.fn == 0) else "✗"
         typer.echo(f"  {mark} {c.label}")

@@ -53,8 +53,11 @@ def run(
     docs_root = docs_repo / config.docs_root
     result = PipelineResult(diff=diff)
 
+    # Persist the embeddings index here so repeated runs reuse it (CI caches this dir).
+    cache_dir = docs_repo / DOCSYNC_DIR / "state" / "embeddings"
     impacted = map_impact(
-        diff, manifest, docs_root, config, use_embeddings=use_embeddings, client=client
+        diff, manifest, docs_root, config,
+        use_embeddings=use_embeddings, cache_dir=cache_dir, client=client,
     )
 
     for page in impacted:

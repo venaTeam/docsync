@@ -39,7 +39,8 @@ from typing import Callable, Optional
 
 from pydantic import BaseModel, Field
 
-from .impact import find_anchor_candidates
+from .config import DOCSYNC_DIR
+from .impact import find_anchor_candidates, find_embedding_candidates
 from .models import CodeDiff, DocsyncConfig, Manifest
 
 # A diff builder: (repo, base, head) -> CodeDiff. Injectable so tests avoid the
@@ -143,10 +144,25 @@ def load_golden(path: Path) -> list[GoldenCase]:
 # ---------------------------------------------------------------------------
 
 
-def _map_actual_pages(diff: CodeDiff, manifest: Manifest) -> list[str]:
-    """mode="map": sorted unique anchored page paths (FREE — no LLM)."""
-    candidates = find_anchor_candidates(diff, manifest)
-    return sorted({c.page_path for c in candidates})
+def _map_actual_pages(
+    diff: CodeDiff,
+    manifest: Manifest,
+    *,
+    docs_root: Optional[Path] = None,
+    config: Optional[DocsyncConfig] = None,
+    use_embeddings: bool = False,
+    cache_dir: Optional[Path] = None,
+) -> list[str]:
+    """mode="map": sorted unique candidate page paths (FREE — no judge/LLM).
+
+    Anchors always; with `use_embeddings` also the full-tree recall-net (so the
+    metric reflects unanchored-page recall too).
+    """
+    pages = {c.page_path for c in find_anchor_candidates(diff, manifest)}
+    if use_embeddings and docs_root is not None and config is not None:
+        for c in find_embedding_candidates(diff, docs_root, None, config, cache_dir=cache_dir):
+            pages.add(c.page_path)
+    return sorted(pages)
 
 
 def _full_actual_pages(
@@ -155,11 +171,14 @@ def _full_actual_pages(
     config: DocsyncConfig,
     manifest: Manifest,
     client,
+    use_embeddings: bool = False,
 ) -> list[str]:
     """mode="full": sorted page paths the LLM pipeline actually edits."""
     from . import pipeline  # local import: keep the LLM path off the map-mode hot path
 
-    result = pipeline.run(diff, docs_repo, config, manifest, client=client)
+    result = pipeline.run(
+        diff, docs_repo, config, manifest, use_embeddings=use_embeddings, client=client
+    )
     return sorted(o.page_path for o in result.changed())
 
 
@@ -170,6 +189,7 @@ def run_eval(
     manifest: Manifest,
     *,
     mode: str = "map",
+    use_embeddings: bool = False,
     client=None,
     diff_fn: Optional[DiffFn] = None,
 ) -> EvalReport:
@@ -195,15 +215,25 @@ def run_eval(
     if mode not in ("map", "full"):
         raise ValueError(f"unknown eval mode {mode!r} (expected 'map' or 'full')")
 
+    docs_root = Path(docs_repo) / config.docs_root
+    cache_dir = Path(docs_repo) / DOCSYNC_DIR / "state" / "embeddings"
+
     results: list[CaseResult] = []
     for case in cases:
         expected = list(dict.fromkeys(case.expected_pages))  # de-dupe, keep order
         try:
             diff = diff_fn(case.repo, case.base, case.head)
             if mode == "map":
-                actual = _map_actual_pages(diff, manifest)
+                actual = _map_actual_pages(
+                    diff, manifest,
+                    docs_root=docs_root, config=config,
+                    use_embeddings=use_embeddings, cache_dir=cache_dir,
+                )
             else:
-                actual = _full_actual_pages(diff, docs_repo, config, manifest, client)
+                actual = _full_actual_pages(
+                    diff, docs_repo, config, manifest, client,
+                    use_embeddings=use_embeddings,
+                )
             label = case.label
         except Exception as exc:  # noqa: BLE001 — one bad case must not kill the run
             actual = []
