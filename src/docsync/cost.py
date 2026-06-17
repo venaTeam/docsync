@@ -15,10 +15,30 @@ access) and the `claude-code` CLI envelope's `usage` dict.
 
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
 from .models import ModelUsage, RunUsage
+
+# The pipeline stage a metered call belongs to ("judge" | "edit" | "critique").
+# Set with `stage(...)` around the LLM call; `_MeteredMessages.parse` reads it so
+# spend can be attributed per stage without threading a param through call sites.
+# A ContextVar is per-thread, so the value set inside a ThreadPool worker is the
+# one its own parse() sees — exactly what we want when stages run concurrently.
+current_stage: ContextVar[str | None] = ContextVar("docsync_stage", default=None)
+
+
+@contextmanager
+def stage(name: str | None) -> Iterator[None]:
+    """Attribute LLM calls made in this block to pipeline stage `name`."""
+    token = current_stage.set(name)
+    try:
+        yield
+    finally:
+        current_stage.reset(token)
 
 
 @dataclass(frozen=True)
@@ -75,23 +95,32 @@ class UsageMeter:
     """Mutable accumulator of per-model token usage across a run."""
 
     def __init__(self) -> None:
-        self._by_model: dict[str, ModelUsage] = {}
+        # Keyed by (model, stage) so judge vs critique (both Haiku) are separable.
+        self._by_model: dict[tuple[str, str | None], ModelUsage] = {}
+        # record() is called concurrently once the judge/edit loops are parallel.
+        self._lock = threading.Lock()
 
-    def record(self, model: str | None, usage: Any) -> None:
-        """Add one response's usage. No-op when usage is missing (e.g. fake clients)."""
+    def record(self, model: str | None, usage: Any, stage: str | None = None) -> None:
+        """Add one response's usage. No-op when usage is missing (e.g. fake clients).
+
+        Thread-safe: the per-(model, stage) read-modify-write is guarded by a lock
+        (the body is pure arithmetic, so the critical section is microseconds).
+        """
         if usage is None:
             return
         name = model or "(unknown)"
-        mu = self._by_model.get(name)
-        if mu is None:
-            mu = ModelUsage(model=name)
-            self._by_model[name] = mu
-        mu.calls += 1
-        mu.input_tokens += _get(usage, "input_tokens")
-        mu.output_tokens += _get(usage, "output_tokens")
-        mu.cache_creation_input_tokens += _get(usage, "cache_creation_input_tokens")
-        mu.cache_read_input_tokens += _get(usage, "cache_read_input_tokens")
-        mu.cost_usd += cost_of(model, usage)
+        key = (name, stage)
+        with self._lock:
+            mu = self._by_model.get(key)
+            if mu is None:
+                mu = ModelUsage(model=name, stage=stage)
+                self._by_model[key] = mu
+            mu.calls += 1
+            mu.input_tokens += _get(usage, "input_tokens")
+            mu.output_tokens += _get(usage, "output_tokens")
+            mu.cache_creation_input_tokens += _get(usage, "cache_creation_input_tokens")
+            mu.cache_read_input_tokens += _get(usage, "cache_read_input_tokens")
+            mu.cost_usd += cost_of(model, usage)
 
     def finalize(self) -> RunUsage:
         """Collapse the accumulator into a serializable `RunUsage` (cost-sorted)."""
@@ -125,7 +154,9 @@ class _MeteredMessages:
 
     def parse(self, *args: Any, **kwargs: Any) -> Any:
         resp = self._inner.parse(*args, **kwargs)
-        self._meter.record(kwargs.get("model"), getattr(resp, "usage", None))
+        self._meter.record(
+            kwargs.get("model"), getattr(resp, "usage", None), stage=current_stage.get()
+        )
         return resp
 
 
@@ -160,7 +191,10 @@ def render_usage_md(usage: RunUsage | None) -> list[str]:
         f"prompt-cache hit {usage.cache_hit_rate * 100:.0f}%"
     )
     for m in usage.by_model:
-        lines.append(f"- `{m.model}` — {m.calls} call(s), ~${m.cost_usd:.4f}")
+        stage_suffix = f" ({m.stage})" if m.stage else ""
+        lines.append(
+            f"- `{m.model}`{stage_suffix} — {m.calls} call(s), ~${m.cost_usd:.4f}"
+        )
     lines.append(
         "_Estimated from a built-in price table; may differ from your actual bill._"
     )
@@ -171,7 +205,10 @@ def render_usage_console(usage: RunUsage | None) -> str:
     """One-line cost summary for the terminal — empty when nothing was metered."""
     if usage is None or usage.calls == 0:
         return ""
-    breakdown = ", ".join(f"{m.model}×{m.calls}" for m in usage.by_model)
+    def _label(m: ModelUsage) -> str:
+        return f"{m.model}/{m.stage}" if m.stage else m.model
+
+    breakdown = ", ".join(f"{_label(m)}×{m.calls}" for m in usage.by_model)
     return (
         f"docsync: ~${usage.cost_usd:.4f} est. over {usage.calls} call(s), "
         f"prompt-cache hit {usage.cache_hit_rate * 100:.0f}% ({breakdown})"
