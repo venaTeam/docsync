@@ -13,6 +13,7 @@ from docsync.edits import (
     apply_edits,
     build_edit_prompt,
     generate_page_edit,
+    should_cache_diff,
 )
 from docsync.models import (
     CandidateSource,
@@ -259,6 +260,57 @@ def test_generate_page_edit_returns_parsed_output_and_calls_model():
     assert call["output_format"] is PageEdit
     # System prompt cached (invariant across pages in a run).
     assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+# ---------------------------------------------------------------------------
+# Diff prompt-caching (gated, edit-stage only)
+# ---------------------------------------------------------------------------
+
+
+def test_should_cache_diff_gates_on_pages_and_size():
+    small = make_diff(hunks=["@@ -1 +1 @@\n-a\n+b"])
+    big = make_diff(hunks=["X" * 20_000])
+    assert should_cache_diff(small, n_pages=3) is False  # diff too small to cache
+    assert should_cache_diff(big, n_pages=1) is False    # single page: no reads
+    assert should_cache_diff(big, n_pages=2) is True     # big diff + multiple pages
+
+
+def test_generate_page_edit_default_keeps_single_uncached_diff():
+    client = FakeClient(PageEdit(edits=[]))
+    generate_page_edit(
+        "p.mdx", "page text", make_diff(symbols=["get_alerts"]), make_impacted(),
+        manifest_page=None, config=DocsyncConfig(), client=client,  # cache_diff defaults False
+    )
+    call = client.messages.calls[0]
+    assert len(call["system"]) == 1  # instructions only
+    assert "get_alerts" in call["messages"][0]["content"]  # diff inline in the user msg
+
+
+def test_generate_page_edit_caches_diff_in_system_block():
+    client = FakeClient(PageEdit(edits=[]))
+    big = make_diff(symbols=["get_alerts"], hunks=["X" * 20_000])
+    generate_page_edit(
+        "p.mdx", "page text", big, make_impacted(),
+        manifest_page=None, config=DocsyncConfig(), cache_diff=True, client=client,
+    )
+    call = client.messages.calls[0]
+    system = call["system"]
+    assert len(system) == 2
+    assert system[1]["cache_control"] == {"type": "ephemeral"}
+    assert "Code change" in system[1]["text"]
+    # The diff is in the cached block, NOT re-sent in the per-page user message.
+    user = call["messages"][0]["content"]
+    assert "system context" in user
+    assert "get_alerts" not in user
+
+
+def test_build_edit_prompt_can_omit_diff_for_caching():
+    diff = make_diff(symbols=["get_alerts"])
+    _, user = build_edit_prompt(
+        "p.mdx", "page", diff, make_impacted(), manifest_page=None, include_diff=False
+    )
+    assert "get_alerts" not in user
+    assert "system context" in user
 
 
 def test_generate_page_edit_passes_no_change_through():
