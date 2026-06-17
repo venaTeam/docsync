@@ -1,0 +1,34 @@
+[
+  {
+    "repo": "venaTeam/keep-event-handler",
+    "base": "8c3ab02f957bbcdeb54026493ab83f1e2601b325",
+    "head": "3853cd4b7b70",
+    "label": "src/ refactor — stale path refs (positive)",
+    "expected_pages": [
+      "services/event-handler.mdx",
+      "operations/authentication.mdx",
+      "architecture/data-flow.mdx"
+    ]
+  },
+  {
+    "repo": "venaTeam/keep-api-gateway",
+    "base": "049b051350abbaa2af6a309a2b90fdceb06ec5e3",
+    "head": "c9aa26622852",
+    "label": "soft-delete route — adds undocumented behavior, no existing text invalidated (true negative at edit stage)",
+    "expected_pages": []
+  },
+  {
+    "repo": "venaTeam/keep-workflows",
+    "base": "e399c8a04bce41ad92fa7d30205fee0dcdb86af2",
+    "head": "4f7b42cc9d93",
+    "label": "watcher in lifespan — new undocumented aux task (true negative at edit stage)",
+    "expected_pages": []
+  },
+  {
+    "repo": "venaTeam/keep-ui",
+    "base": "7bc0dffe72e5",
+    "head": "41cae008cfa8",
+    "label": "UI change — no code anchors (true negative at mapping)",
+    "expected_pages": []
+  }
+]
