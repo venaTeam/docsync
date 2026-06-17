@@ -1,0 +1,28 @@
+# Add this job to EACH service repo's existing PR/merge workflow (or as its own
+# workflow). On a merge to main/dev that touched src/**, it fires a
+# repository_dispatch at the docs repo so docsync can update the docs.
+#
+# Requires a repo/org secret DOCSYNC_DISPATCH_TOKEN with `contents: write` on the
+# docs repo (needed to send repository_dispatch).
+name: notify-docsync
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "src/**"
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch code-merged to docs repo
+        env:
+          GH_TOKEN: ${{ secrets.DOCSYNC_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/keephq/keep-developer-docs/dispatches \
+            -f event_type=code-merged \
+            -F "client_payload[repo]=${{ github.repository }}" \
+            -F "client_payload[base_sha]=${{ github.event.before }}" \
+            -F "client_payload[head_sha]=${{ github.sha }}" \
+            -F "client_payload[pr_title]=${{ github.event.head_commit.message }}"

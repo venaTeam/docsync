@@ -1,0 +1,75 @@
+name: "docsync"
+description: "Keep documentation in sync with code changes — open a surgical docs PR from a merged service-repo PR."
+author: "docsync"
+branding:
+  icon: "refresh-cw"
+  color: "orange"
+
+inputs:
+  src-repo:
+    description: "Service repo whose merge triggered this (owner/name)."
+    required: true
+  base:
+    description: "Base sha (before the merge)."
+    required: true
+  head:
+    description: "Head sha (after the merge)."
+    required: true
+  pr-number:
+    description: "Triggering PR number (for the docs PR body)."
+    required: false
+  pr-title:
+    description: "Triggering PR title."
+    required: false
+  docs-path:
+    description: "Path to the checked-out docs repo (defaults to the workspace)."
+    required: false
+    default: "."
+  open-pr:
+    description: "Open a docs PR (true) or just emit a patch + report (false)."
+    required: false
+    default: "true"
+  use-embeddings:
+    description: "Enable the embeddings recall-net (requires the embeddings extra)."
+    required: false
+    default: "false"
+  anthropic-api-key:
+    description: "Anthropic API key for the edit/judge models."
+    required: true
+  github-token:
+    description: "Token with read on the service repo and write on the docs repo."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install docsync
+      shell: bash
+      run: pipx install "git+https://github.com/keephq/docsync@v0.1.0"
+
+    - name: Run docsync
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        EMB=""
+        [ "${{ inputs.use-embeddings }}" = "true" ] && EMB="--use-embeddings"
+        PRN=""
+        [ -n "${{ inputs.pr-number }}" ] && PRN="--pr-number ${{ inputs.pr-number }}"
+        docsync run \
+          --src-repo "${{ inputs.src-repo }}" \
+          --base "${{ inputs.base }}" \
+          --head "${{ inputs.head }}" \
+          --docs-repo "${{ inputs.docs-path }}" \
+          --pr-title "${{ inputs.pr-title }}" \
+          $PRN $EMB \
+          --no-dry-run \
+          $([ "${{ inputs.open-pr }}" = "true" ] && echo --open-pr) \
+          --report-path "$RUNNER_TEMP/docsync-report.md"
