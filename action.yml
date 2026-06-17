@@ -7,14 +7,14 @@ branding:
 
 inputs:
   src-repo:
-    description: "Service repo whose merge triggered this (owner/name)."
-    required: true
+    description: "Service repo whose merge triggered this (owner/name). Leave empty to derive from the event."
+    required: false
   base:
-    description: "Base sha (before the merge)."
-    required: true
+    description: "Base sha (before the merge). Leave empty to derive from the event."
+    required: false
   head:
-    description: "Head sha (after the merge)."
-    required: true
+    description: "Head sha (after the merge). Leave empty to derive from the event."
+    required: false
   pr-number:
     description: "Triggering PR number (for the docs PR body)."
     required: false
@@ -61,15 +61,21 @@ runs:
       run: |
         EMB=""
         [ "${{ inputs.use-embeddings }}" = "true" ] && EMB="--use-embeddings"
-        PRN=""
-        [ -n "${{ inputs.pr-number }}" ] && PRN="--pr-number ${{ inputs.pr-number }}"
-        docsync run \
-          --src-repo "${{ inputs.src-repo }}" \
-          --base "${{ inputs.base }}" \
-          --head "${{ inputs.head }}" \
-          --docs-repo "${{ inputs.docs-path }}" \
-          --pr-title "${{ inputs.pr-title }}" \
-          $PRN $EMB \
-          --no-dry-run \
-          $([ "${{ inputs.open-pr }}" = "true" ] && echo --open-pr) \
-          --report-path "$RUNNER_TEMP/docsync-report.md"
+        OPENPR=""
+        [ "${{ inputs.open-pr }}" = "true" ] && OPENPR="--open-pr"
+        REPORT="--report-path $RUNNER_TEMP/docsync-report.md"
+        if [ -n "${{ inputs.src-repo }}" ]; then
+          # Explicit mode (e.g. workflow_dispatch): caller supplied the refs.
+          PRN=""
+          [ -n "${{ inputs.pr-number }}" ] && PRN="--pr-number ${{ inputs.pr-number }}"
+          docsync run --docs-repo "${{ inputs.docs-path }}" \
+            --src-repo "${{ inputs.src-repo }}" \
+            --base "${{ inputs.base }}" --head "${{ inputs.head }}" \
+            --pr-title "${{ inputs.pr-title }}" \
+            $PRN $EMB --no-dry-run $OPENPR $REPORT
+        else
+          # Event mode: derive repo/base/head/PR straight from the dispatch payload.
+          docsync run --docs-repo "${{ inputs.docs-path }}" \
+            --from-event "$GITHUB_EVENT_PATH" \
+            $EMB --no-dry-run $OPENPR $REPORT
+        fi
