@@ -1,0 +1,45 @@
+"""Doc-framework adapter interface.
+
+An adapter encapsulates everything format-specific about a docs framework:
+how to read a page's frontmatter, what structural invariants must be preserved
+in an edit, and how to run the framework's own link/build checks. The MVP ships
+only `MintlifyAdapter`; this interface is the seam for Docusaurus/GitBook later.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from pathlib import Path
+
+
+class DocAdapter(ABC):
+    name: str
+
+    @abstractmethod
+    def owns(self, page_path: str) -> bool:
+        """True if this adapter handles the given page (by extension/location)."""
+
+    @abstractmethod
+    def split_frontmatter(self, text: str) -> tuple[dict, str]:
+        """Return (frontmatter_dict, body). Empty dict if no frontmatter."""
+
+    @abstractmethod
+    def frontmatter_keys_to_freeze(self) -> list[str]:
+        """Frontmatter keys an edit must never change (e.g. title, description)."""
+
+    @abstractmethod
+    def structural_signature(self, text: str) -> dict:
+        """A structural fingerprint (component tag counts, fence balance, ...).
+
+        validate.py compares the signature before vs after an edit; any change
+        in counts/nesting fails the component-integrity gate.
+        """
+
+    @abstractmethod
+    def check_links(self, docs_root: Path) -> list[str]:
+        """Run the framework's broken-link check over a patched tree.
+
+        Returns a list of human-readable problems (empty == clean). Implementations
+        should degrade gracefully (return []) when the framework CLI is unavailable,
+        and surface that as a warning via the caller.
+        """
