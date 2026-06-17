@@ -73,6 +73,11 @@ def run(
     open_pr: bool = typer.Option(False, help="Branch, commit, push, and open a docs PR."),
     use_embeddings: bool = typer.Option(False, help="Enable the embeddings recall-net."),
     check_links: bool = typer.Option(False, help="Run the mintlify broken-link soft gate."),
+    self_critique: bool = typer.Option(
+        False,
+        help="Adversarially re-check each generated edit against the diff (adds a "
+        "judge-model call per page) and drop edits not justified by the change.",
+    ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
     backend: str = typer.Option(
         "api",
@@ -97,7 +102,8 @@ def run(
     docs_root = docs_repo / config.docs_root
     result = pipeline_mod.run(
         diff, docs_repo, config, manifest,
-        use_embeddings=use_embeddings, check_links=check_links, client=client,
+        use_embeddings=use_embeddings, check_links=check_links,
+        self_critique=self_critique, client=client,
     )
     originals = {
         o.page_path: (docs_root / o.page_path).read_text(encoding="utf-8")
@@ -259,6 +265,45 @@ def doctor(
     else:
         typer.echo("docsync: manifest has issues (see above).")
         raise typer.Exit(1)
+
+
+@app.command()
+def eval(  # noqa: A001 - intentional command name
+    docs_repo: Path = typer.Option(..., help="Docs repo with .docsync/manifest.yml."),
+    golden: Path = typer.Option(..., help="Golden-set JSON of labeled PRs (repo/base/head/expected_pages)."),
+    mode: str = typer.Option("map", help="'map' (free anchor mapping) or 'full' (LLM edit pipeline)."),
+    backend: str = typer.Option("api", help="LLM backend for --mode full: 'api' or 'claude-code'."),
+    json_out: Optional[Path] = typer.Option(None, help="Write the full EvalReport JSON here."),
+):
+    """Score docsync against a labeled golden set: page-level precision/recall/F1.
+
+    `--mode map` is free (anchors only) and measures mapping recall; `--mode full`
+    runs the editor and measures edit-stage precision (costs LLM calls).
+    """
+    from .eval import load_golden, run_eval
+
+    config = cfg.load_config(docs_repo)
+    manifest = cfg.load_manifest(docs_repo)
+    cases = load_golden(golden)
+
+    client = None
+    if mode == "full":
+        from .llm_backends import get_client
+
+        client = get_client(backend)
+
+    report = run_eval(cases, docs_repo, config, manifest, mode=mode, client=client)
+    for c in report.cases:
+        mark = "✓" if (c.fp == 0 and c.fn == 0) else "✗"
+        typer.echo(f"  {mark} {c.label}")
+        typer.echo(f"      expected={c.expected}  actual={c.actual}  tp={c.tp} fp={c.fp} fn={c.fn}")
+    typer.echo(
+        f"docsync eval [{mode}]: P={report.precision:.2f} R={report.recall:.2f} "
+        f"F1={report.f1:.2f} over {report.n_cases} case(s)"
+    )
+    if json_out:
+        json_out.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        typer.echo(f"docsync: eval report written to {json_out}")
 
 
 if __name__ == "__main__":
