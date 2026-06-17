@@ -50,6 +50,14 @@ _FENCE_RE = re.compile(r"^\s*```", re.MULTILINE)
 # A mermaid fence opener: ```mermaid (optionally with trailing space).
 _MERMAID_RE = re.compile(r"^\s*```mermaid\b", re.MULTILINE)
 
+# Component tag in document order: opening `<Card ...>`, self-closing `<Card/>`, or
+# closing `</Card>`. Groups: (1) leading slash, (2) name, (3) trailing slash.
+_TAG_RE = re.compile(r"<(/?)([A-Z][A-Za-z]*)\b[^>]*?(/?)>", re.DOTALL)
+# Fenced code blocks and inline code spans — component tags inside them are example
+# text, not real structure, and must be ignored by the well-formedness scan.
+_FENCE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`]*`")
+
 # Broken-link check tuning: be defensive, never let the doc pipeline hang on it.
 _LINK_CHECK_TIMEOUT_S = 30
 _LINK_PROBLEM_RE = re.compile(r"broken|not found|404|missing|unreachable", re.IGNORECASE)
@@ -123,6 +131,45 @@ class MintlifyAdapter(DocAdapter):
         signature["fence_count"] = len(_FENCE_RE.findall(text))
         signature["mermaid_count"] = len(_MERMAID_RE.findall(text))
         return signature
+
+    # -- well-formedness (nesting / balance) ------------------------------
+
+    def structural_problems(self, text: str) -> list[str]:
+        """Stack-check known component tags for balance + correct nesting.
+
+        Catches the failure modes the count signature misses: a dropped closing
+        tag, a stray close, or a swapped/reordered pair (whose counts still match).
+        Tags inside fenced code blocks / inline code are ignored (they're examples),
+        and only known components are tracked (so arbitrary `<Thing>` prose can't
+        produce false positives). Self-closing `<Card/>` is balanced by definition.
+        """
+        scan = _INLINE_CODE_RE.sub("", _FENCE_BLOCK_RE.sub("", text))
+        stack: list[str] = []
+        problems: list[str] = []
+
+        for match in _TAG_RE.finditer(scan):
+            closing, name, self_closing = match.group(1), match.group(2), match.group(3)
+            if name not in _KNOWN_COMPONENTS:
+                continue
+            if self_closing:
+                continue
+            if not closing:
+                stack.append(name)
+                continue
+            # A closing tag.
+            if stack and stack[-1] == name:
+                stack.pop()
+            elif name in stack:
+                problems.append(
+                    f"mismatched nesting: </{name}> closes <{stack[-1]}>"
+                )
+                while stack and stack.pop() != name:
+                    pass
+            else:
+                problems.append(f"stray closing </{name}> with no matching open tag")
+
+        problems.extend(f"unclosed <{name}> (no matching close tag)" for name in stack)
+        return problems
 
     # -- link check (soft gate) -------------------------------------------
 

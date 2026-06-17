@@ -35,6 +35,16 @@ class DocAdapter(ABC):
         in counts/nesting fails the component-integrity gate.
         """
 
+    def structural_problems(self, text: str) -> list[str]:
+        """Well-formedness problems in `text` (unbalanced / mis-nested components).
+
+        Complements `structural_signature`: counts can stay equal while nesting
+        breaks (a reordered or swapped tag pair), so this checks the *new* text is
+        actually well-formed. Default: no checks (subclasses override). Returns a
+        list of human-readable problems (empty == well-formed).
+        """
+        return []
+
     @abstractmethod
     def check_links(self, docs_root: Path) -> list[str]:
         """Run the framework's broken-link check over a patched tree.
