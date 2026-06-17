@@ -53,3 +53,22 @@ class DocAdapter(ABC):
         should degrade gracefully (return []) when the framework CLI is unavailable,
         and surface that as a warning via the caller.
         """
+
+    def nav_routes(self, docs_root: Path) -> list[str]:
+        """Existing navigation routes (extensionless page paths), for collision checks.
+
+        Used by bootstrap to avoid proposing a page that's already in the nav.
+        Default: none (a framework with no nav file has nothing to collide with).
+        """
+        return []
+
+    def register_pages_in_nav(
+        self, docs_root: Path, page_paths: list[str], *, group: str
+    ) -> list[str]:
+        """Add `page_paths` (page paths under docs_root) to the framework's nav.
+
+        Idempotent: re-registering an existing page is a no-op. Returns the list of
+        nav files actually modified (empty == no nav concept / nothing changed).
+        Default: no-op for frameworks without a navigation manifest.
+        """
+        return []

@@ -11,6 +11,7 @@ Docusaurus / GitBook adapter would slot in later.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -18,6 +19,13 @@ from pathlib import Path
 import frontmatter
 
 from docsync.adapters.base import DocAdapter
+
+# Mintlify v4 reads `docs.json` and ignores the legacy `mint.json`; `docs.json`
+# is therefore the canonical nav target. We mirror writes into `mint.json` when
+# it exists (its shape differs) so the two don't silently diverge in a repo that
+# still ships both.
+_DOCS_JSON = "docs.json"
+_MINT_JSON = "mint.json"
 
 # MDX component opening tags we count. Restricting to a known set keeps the
 # signature stable against stray capitalised prose words while still covering the
@@ -231,3 +239,105 @@ class MintlifyAdapter(DocAdapter):
         except Exception:
             return []
         return problems
+
+    # -- navigation (bootstrap: register new pages) ------------------------
+
+    @staticmethod
+    def _page_ref(page_path: str) -> str:
+        """A Mintlify nav route: the page path minus its extension, no leading slash."""
+        ref = page_path[:-4] if page_path.lower().endswith(".mdx") else (
+            page_path[:-3] if page_path.lower().endswith(".md") else page_path
+        )
+        return ref.lstrip("/")
+
+    @staticmethod
+    def _groups_list(data: dict) -> list:
+        """Return the mutable list of {group, pages} entries for either nav shape.
+
+        `docs.json` nests them under `navigation.groups`; legacy `mint.json` puts
+        them directly in `navigation`. A missing nav is initialized in the
+        `docs.json` shape. Returns the list object held inside `data`.
+        """
+        nav = data.get("navigation")
+        if isinstance(nav, dict):
+            groups = nav.setdefault("groups", [])
+            return groups
+        if isinstance(nav, list):
+            return nav
+        data["navigation"] = {"groups": []}
+        return data["navigation"]["groups"]
+
+    def nav_routes(self, docs_root: Path) -> list[str]:
+        """Every page ref currently in docs.json (falling back to mint.json)."""
+        for name in (_DOCS_JSON, _MINT_JSON):
+            path = Path(docs_root) / name
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            routes: list[str] = []
+            for grp in self._groups_list(data):
+                if isinstance(grp, dict):
+                    routes.extend(p for p in grp.get("pages", []) if isinstance(p, str))
+            return routes
+        return []
+
+    def register_pages_in_nav(
+        self, docs_root: Path, page_paths: list[str], *, group: str
+    ) -> list[str]:
+        """Add pages to the `group` nav group in docs.json (mirrored to mint.json).
+
+        Idempotent: a page already present anywhere in the nav is skipped, and the
+        target group is created only if absent. Returns the nav files modified.
+        """
+        refs = [self._page_ref(p) for p in page_paths]
+        modified: list[str] = []
+        for name in (_DOCS_JSON, _MINT_JSON):
+            path = Path(docs_root) / name
+            if not path.exists():
+                continue
+            if self._register_in_file(path, refs, group):
+                modified.append(name)
+        return modified
+
+    @staticmethod
+    def _detect_indent(text: str) -> int:
+        """Infer a JSON file's indent width from its first indented line (default 2)."""
+        for line in text.splitlines():
+            stripped = line.lstrip(" ")
+            if stripped and stripped != line:
+                return len(line) - len(stripped)
+        return 2
+
+    def _register_in_file(self, path: Path, refs: list[str], group: str) -> bool:
+        """Set-union `refs` into `group` within one nav file. True if it changed."""
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return False
+        indent = self._detect_indent(raw)
+
+        groups = self._groups_list(data)
+        existing: set[str] = set()
+        for grp in groups:
+            if isinstance(grp, dict):
+                existing.update(p for p in grp.get("pages", []) if isinstance(p, str))
+        new_refs = [r for r in refs if r not in existing]
+        if not new_refs:
+            return False  # idempotent no-op
+
+        target = next(
+            (g for g in groups if isinstance(g, dict) and g.get("group") == group), None
+        )
+        if target is None:
+            target = {"group": group, "pages": []}
+            groups.append(target)
+        target.setdefault("pages", []).extend(new_refs)
+
+        # Preserve the file's existing indent so the mirror produces a minimal diff
+        # (docs.json is 2-space, legacy mint.json is often 4-space).
+        path.write_text(json.dumps(data, indent=indent) + "\n", encoding="utf-8")
+        return True
