@@ -114,6 +114,13 @@ class DocsyncConfig(BaseModel):
     # Anchor hits at or above this judge confidence skip the judge entirely.
     anchor_autopass: bool = True
     reviewers: list[str] = Field(default_factory=list)
+    # --- ship-safety dial ---
+    # Skip the (expensive) edit stage for any page whose impact confidence is below
+    # this. 0.0 = off (anchor autopass is always 1.0, so this only gates judge/
+    # embedding pages). Raise it for a conservative first rollout on a real repo.
+    min_edit_confidence: float = 0.0
+    # Labels applied to opened docs PRs (auto-created in the docs repo if missing).
+    pr_labels: list[str] = Field(default_factory=lambda: ["docsync"])
     # Identifier tokens that name source concepts but are too generic to embed well;
     # excluded from the embedding query (e.g. "self", "config", "value").
     stopword_symbols: list[str] = Field(default_factory=list)

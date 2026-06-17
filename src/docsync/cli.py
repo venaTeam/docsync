@@ -78,6 +78,11 @@ def run(
         help="Adversarially re-check each generated edit against the diff (adds a "
         "judge-model call per page) and drop edits not justified by the change.",
     ),
+    min_confidence: Optional[float] = typer.Option(
+        None,
+        help="Skip the edit stage for pages below this impact confidence (0-1). "
+        "Overrides config.min_edit_confidence; use for a conservative first rollout.",
+    ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
     backend: str = typer.Option(
         "api",
@@ -103,7 +108,7 @@ def run(
     result = pipeline_mod.run(
         diff, docs_repo, config, manifest,
         use_embeddings=use_embeddings, check_links=check_links,
-        self_critique=self_critique, client=client,
+        self_critique=self_critique, min_confidence=min_confidence, client=client,
     )
     originals = {
         o.page_path: (docs_root / o.page_path).read_text(encoding="utf-8")
@@ -138,6 +143,7 @@ def run(
             body=body,
             paths=written,
             reviewers=config.reviewers,
+            labels=config.pr_labels,
         )
         typer.echo(f"docsync: PR -> {url}")
     else:

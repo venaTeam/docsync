@@ -43,6 +43,7 @@ def run(
     use_embeddings: bool = False,
     check_links: bool = False,
     self_critique: bool = False,
+    min_confidence: float | None = None,
     client=None,
     meter: UsageMeter | None = None,
 ) -> PipelineResult:
@@ -66,6 +67,13 @@ def run(
     if client is not None:
         client = MeteredClient(client, meter)
 
+    # Ship-safety: skip the edit stage for low-confidence pages (CLI flag overrides
+    # the configured floor). Anchor autopass is 1.0, so this only gates judge/
+    # embedding-sourced pages — useful for a conservative first rollout.
+    confidence_floor = (
+        min_confidence if min_confidence is not None else config.min_edit_confidence
+    )
+
     # Persist the embeddings index here so repeated runs reuse it (CI caches this dir).
     cache_dir = docs_repo / DOCSYNC_DIR / "state" / "embeddings"
     impacted = map_impact(
@@ -80,6 +88,14 @@ def run(
         original = _read_page(docs_root, page.page_path)
         if original is None:
             outcome.note = f"page not found on disk: {page.page_path}"
+            result.outcomes.append(outcome)
+            continue
+
+        if page.confidence < confidence_floor:
+            outcome.note = (
+                f"skipped: confidence {page.confidence:.2f} below floor "
+                f"{confidence_floor:.2f}"
+            )
             result.outcomes.append(outcome)
             continue
 
