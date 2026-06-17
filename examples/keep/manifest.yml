@@ -1,0 +1,211 @@
+# docsync manifest for the Keep developer docs (Mintlify, .mdx).
+#
+# Maps each doc page to the source code that is its source of truth, so a code
+# diff in one of the four service repos can be routed to exactly the pages it
+# can affect. `globs` are fnmatch patterns over changed file paths; `symbols`
+# are function / class / module-level-assignment names (trailing * = prefix).
+# `repo` matches the diff's owner/name (CodeDiff.repo).
+#
+# Symbols below were verified against the actual checked-out source — see the
+# README for the file:symbol provenance.
+
+pages:
+  # services/api-gateway.mdx
+  #   - "Routes" table  ← router_setup.py setup_routers() + the routes/ package
+  #   - "Configuration" env-vars table ← config/config.py (starlette Config vars)
+  #   - webhook route / EventProducer ← routes/alerts.py + services/producers/
+  - path: services/api-gateway.mdx
+    sources:
+      - repo: keephq/keep-api-gateway
+        globs:
+          - "src/routes/router_setup.py"
+          - "src/config/config.py"
+        symbols:
+          - "setup_routers"
+          - "AUTH_TYPE"
+          - "CONSUMER"
+          - "KEEP_*"
+          - "on_starting"
+          - "post_worker_init"
+      - repo: keephq/keep-api-gateway
+        globs:
+          - "src/routes/alerts.py"
+          - "src/services/producers/**"
+        symbols:
+          - "receive_event"
+          - "get_event_producer"
+          - "EventProducer"
+          - "KafkaEventProducer"
+          - "EventSubscriber"
+    max_diff_lines: 80
+    max_diff_pct: 0.5
+    allow_frontmatter_edit: false
+
+  # services/event-handler.mdx
+  #   - "Metrics" table ← core/metrics.py prometheus counters/summaries
+  #   - "Configuration" table ← config/consts.py (KAFKA_*) + consumer_main.py ports
+  #   - pipeline / entry points ← consumer_main.py, controllers/event_controller.py
+  #   - "Deduplication" deep-dive ← alert_deduplicator/
+  - path: services/event-handler.mdx
+    sources:
+      - repo: keephq/keep-event-handler
+        globs:
+          - "src/core/metrics.py"
+        symbols:
+          - "events_in_counter"
+          - "events_out_counter"
+          - "events_error_counter"
+          - "processing_time_summary"
+      - repo: keephq/keep-event-handler
+        globs:
+          - "src/config/consts.py"
+          - "src/consumer_main.py"
+          - "src/controllers/event_controller.py"
+        symbols:
+          - "KAFKA_*"
+          - "MAX_PROCESSING_RETRIES"
+          - "PROMETHEUS_METRICS_PORT"
+          - "HEALTH_CHECK_PORT"
+          - "process_event_sync"
+      - repo: keephq/keep-event-handler
+        globs:
+          - "src/alert_deduplicator/**"
+    max_diff_lines: 80
+    max_diff_pct: 0.5
+    allow_frontmatter_edit: false
+
+  # operations/authentication.mdx
+  #   - "Identity backends" table ← IdentityManagerTypes enum
+  #   - factory / caching / dispatch ← IdentityManagerFactory, AuthVerifierBase
+  #   - "Scopes" table ← rbac.py SCOPES / has_scopes
+  #   - AuthenticatedEntity shape ← authenticatedentity.py
+  - path: operations/authentication.mdx
+    sources:
+      - repo: keephq/keep-api-gateway
+        globs:
+          - "src/services/identity_manager/identitymanagerfactory.py"
+          - "src/services/identity_manager/authverifierbase.py"
+          - "src/services/identity_manager/authenticatedentity.py"
+          - "src/services/identity_manager/rbac.py"
+        symbols:
+          - "IdentityManagerTypes"
+          - "IdentityManagerFactory"
+          - "get_auth_verifier"
+          - "get_identity_manager"
+          - "_backward_compatible_get_identity_manager"
+          - "_manager_cache"
+          - "AuthVerifierBase"
+          - "AuthenticatedEntity"
+          - "has_scopes"
+          - "SCOPES"
+      # Cross-repo: event-handler ships a thin re-export of the same enum.
+      - repo: keephq/keep-event-handler
+        globs:
+          - "src/identitymanager/identitymanagerfactory.py"
+        symbols:
+          - "IdentityManagerTypes"
+    max_diff_lines: 70
+    max_diff_pct: 0.5
+    allow_frontmatter_edit: false
+
+  # components/providers.mdx
+  #   - dynamic loading / lifecycle ← providers_factory.py, providers_service.py
+  #   - blocked premium providers ← workflowmanager.py PREMIUM_PROVIDERS
+  #   - HTTP SSRF blacklist ← http_provider.py BLACKLISTED_ENDPOINTS
+  - path: components/providers.mdx
+    sources:
+      - repo: keephq/keep-workflows
+        globs:
+          - "src/providers/providers_factory.py"
+          - "src/providers/providers_service.py"
+        symbols:
+          - "ProvidersFactory"
+          - "get_provider_class"
+          - "get_consumer_providers"
+          - "ProvidersService"
+          - "install_provider"
+      - repo: keephq/keep-workflows
+        globs:
+          - "src/workflowmanager/workflowmanager.py"
+          - "src/providers/http_provider/http_provider.py"
+        symbols:
+          - "PREMIUM_PROVIDERS"
+          - "_check_premium_providers"
+          - "BLACKLISTED_ENDPOINTS"
+    max_diff_lines: 70
+    max_diff_pct: 0.5
+    allow_frontmatter_edit: false
+
+  # architecture/data-flow.mdx
+  #   - "The AlertDto" table ← models/alert.py AlertDto / AlertStatus / AlertSeverity
+  #   - ordered pipeline ← event_management/process_event_task.py process_event
+  #   - feature-flag env-var table ← the KEEP_*_ENABLED flags in process_event_task.py
+  #   - ingestion stage ← keep-api-gateway routes/alerts.py + producers
+  - path: architecture/data-flow.mdx
+    sources:
+      - repo: keephq/keep-event-handler
+        globs:
+          - "src/models/alert.py"
+        symbols:
+          - "AlertDto"
+          - "AlertStatus"
+          - "AlertSeverity"
+      - repo: keephq/keep-event-handler
+        globs:
+          - "src/event_management/process_event_task.py"
+          - "src/controllers/event_controller.py"
+        symbols:
+          - "process_event"
+          - "process_event_sync"
+          - "KEEP_STORE_RAW_ALERTS"
+          - "KEEP_ALERT_FIELDS_ENABLED"
+          - "KEEP_MAINTENANCE_WINDOWS_ENABLED"
+          - "KEEP_CALCULATE_START_FIRING_TIME_ENABLED"
+      - repo: keephq/keep-api-gateway
+        globs:
+          - "src/routes/alerts.py"
+          - "src/services/producers/**"
+        symbols:
+          - "receive_event"
+          - "get_event_producer"
+    max_diff_lines: 90
+    max_diff_pct: 0.5
+    allow_frontmatter_edit: false
+
+  # ---- TIER 2 (verified anchors) ----
+
+  # components/workflow-engine.mdx
+  #   - scheduler / concurrency strategies ← workflowscheduler.py
+  #   - manager + insert_events / premium check ← workflowmanager.py
+  - path: components/workflow-engine.mdx
+    sources:
+      - repo: keephq/keep-workflows
+        globs:
+          - "src/workflowmanager/workflowscheduler.py"
+          - "src/workflowmanager/workflowmanager.py"
+        symbols:
+          - "WorkflowScheduler"
+          - "WorkflowManager"
+          - "insert_events"
+          - "insert_incident"
+          - "MAX_WORKERS"
+          - "WorkflowStrategy"
+    max_diff_lines: 70
+    max_diff_pct: 0.5
+    allow_frontmatter_edit: false
+
+  # services/workflows.mdx
+  #   - execution model (manager singleton, scheduler, ThreadPoolExecutor)
+  - path: services/workflows.mdx
+    sources:
+      - repo: keephq/keep-workflows
+        globs:
+          - "src/workflowmanager/**"
+          - "src/main.py"
+        symbols:
+          - "WorkflowManager"
+          - "WorkflowScheduler"
+          - "insert_events"
+    max_diff_lines: 70
+    max_diff_pct: 0.5
+    allow_frontmatter_edit: false

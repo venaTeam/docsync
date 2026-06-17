@@ -1,0 +1,44 @@
+# Goes in the DOCS repo (keep-developer-docs/.github/workflows/docsync.yml).
+# Listens for a `code-merged` repository_dispatch from any service repo, checks
+# out the docs, and runs docsync to open a docs-update PR.
+name: docsync
+
+on:
+  repository_dispatch:
+    types: [code-merged]
+  workflow_dispatch:
+    inputs:
+      src-repo: { description: "owner/name", required: true }
+      base: { required: true }
+      head: { required: true }
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore embeddings index cache
+        uses: actions/cache@v4
+        with:
+          path: .docsync/state/embeddings
+          # Keyed on the docs content so the index rebuilds only when docs change.
+          key: docsync-emb-${{ hashFiles('**/*.mdx') }}
+
+      - uses: keephq/docsync@v0.1.0
+        with:
+          src-repo: ${{ github.event.client_payload.repo || inputs.src-repo }}
+          base: ${{ github.event.client_payload.base_sha || inputs.base }}
+          head: ${{ github.event.client_payload.head_sha || inputs.head }}
+          pr-number: ${{ github.event.client_payload.pr_number }}
+          pr-title: ${{ github.event.client_payload.pr_title }}
+          docs-path: "."
+          open-pr: "true"
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ secrets.DOCSYNC_TOKEN }}

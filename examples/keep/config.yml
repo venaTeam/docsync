@@ -1,0 +1,47 @@
+# docsync config for the Keep developer docs.
+# Loaded from <docs-repo>/.docsync/config.yml — all fields are optional and
+# fall back to DocsyncConfig defaults.
+
+models:
+  edit_model: claude-opus-4-8
+  judge_model: claude-haiku-4-5
+  edit_effort: high
+
+# Root of the docs tree, relative to the docs repo root. The Keep developer
+# docs put .mdx pages directly under the repo root (services/, operations/, …).
+docs_root: "."
+
+# Keep an embedding/judge candidate when the judge is at least this confident.
+judge_confidence_threshold: 0.5
+
+# Anchor (glob/symbol) hits skip the judge entirely — the manifest is curated,
+# so a direct anchor match is trusted.
+anchor_autopass: true
+
+# No required human reviewers on generated doc PRs by default.
+reviewers: []
+
+# Generic identifier tokens that name source concepts but are too common to be
+# useful embedding-query terms; excluded from the embedding query so they don't
+# drown out the distinctive symbol names (e.g. AlertDto, IdentityManagerTypes).
+stopword_symbols:
+  - self
+  - config
+  - value
+  - data
+  - get
+  - set
+  - cls
+  - kwargs
+  - args
+  - request
+  - response
+  - app
+  - router
+  - session
+  - tenant_id
+  - event
+  - result
+  - type
+  - name
+  - id
