@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 
@@ -32,12 +33,40 @@ def _build_diff(
     return diff_mod.diff_github(src_repo, base, head, pr_number=pr_number, pr_title=pr_title)
 
 
+def _resolve_diff(src_repo, base, head, pr_number, pr_title, from_event):
+    """Pick the diff source: explicit --from-event > explicit flags > $GITHUB_EVENT_PATH.
+
+    In CI the only thing wired up is the GitHub event JSON, so repo/base/head/PR are
+    derived from it automatically — no flags needed (the core "triggered by commits"
+    goal). Locally you pass --src-repo/--base/--head.
+    """
+    explicit = bool(src_repo and base and head)
+    event_path = from_event or (None if explicit else os.environ.get("GITHUB_EVENT_PATH"))
+    if event_path:
+        from .events import diff_from_event
+
+        return diff_from_event(event_path)
+    if not explicit:
+        raise typer.BadParameter(
+            "provide --from-event (or run in CI with $GITHUB_EVENT_PATH set), "
+            "or all of --src-repo / --base / --head."
+        )
+    return _build_diff(src_repo, base, head, pr_number, pr_title)
+
+
 @app.command()
 def run(
-    src_repo: str = typer.Option(..., help="Service repo: local path or GitHub owner/name."),
-    base: str = typer.Option(..., help="Base ref/sha (before)."),
-    head: str = typer.Option(..., help="Head ref/sha (after)."),
     docs_repo: Path = typer.Option(..., help="Path to the docs repo checkout."),
+    src_repo: Optional[str] = typer.Option(
+        None, help="Service repo: local path or GitHub owner/name. Omit when using --from-event."
+    ),
+    base: Optional[str] = typer.Option(None, help="Base ref/sha (before). Omit with --from-event."),
+    head: Optional[str] = typer.Option(None, help="Head ref/sha (after). Omit with --from-event."),
+    from_event: Optional[Path] = typer.Option(
+        None,
+        help="GitHub event JSON (the CI $GITHUB_EVENT_PATH): derive repo/base/head/PR "
+        "automatically. Auto-detected from $GITHUB_EVENT_PATH when no flags are given.",
+    ),
     pr_number: Optional[int] = typer.Option(None),
     pr_title: Optional[str] = typer.Option(None),
     dry_run: bool = typer.Option(True, help="Compute + report only; do not write or open a PR."),
@@ -58,7 +87,7 @@ def run(
     manifest = cfg.load_manifest(docs_repo)
     client = get_client(backend)
 
-    diff = _build_diff(src_repo, base, head, pr_number, pr_title)
+    diff = _resolve_diff(src_repo, base, head, pr_number, pr_title, from_event)
 
     if cfg.already_processed(docs_repo, diff.repo, diff.head_sha):
         typer.echo(f"docsync: {diff.repo}@{diff.head_sha[:8]} already processed — skipping.")
@@ -161,6 +190,75 @@ def index(
                    "(install with `poetry install -E embeddings`).")
     else:
         typer.echo("docsync: embeddings index ready.")
+
+
+@app.command()
+def init(
+    docs_repo: Path = typer.Option(Path("."), help="Docs repo to scaffold .docsync/ into."),
+    force: bool = typer.Option(False, help="Overwrite existing .docsync files."),
+):
+    """Scaffold .docsync/{config.yml,manifest.yml,state/cursors.json} in a docs repo.
+
+    First step to adopting docsync: creates a starter config + a commented manifest
+    template you then edit to map pages to their source code.
+    """
+    from .scaffold import init_docs_repo
+
+    created = init_docs_repo(docs_repo, force=force)
+    if not created:
+        typer.echo("docsync: .docsync/ already present — nothing to do (use --force to overwrite).")
+        return
+    for p in created:
+        typer.echo(f"  created {p}")
+    typer.echo(
+        f"docsync: scaffolded {len(created)} file(s). "
+        "Edit .docsync/manifest.yml to map pages to source code, then run `docsync doctor`."
+    )
+
+
+@app.command()
+def doctor(
+    docs_repo: Path = typer.Option(..., help="Docs repo with a .docsync/manifest.yml."),
+    checkout: Optional[List[str]] = typer.Option(
+        None,
+        help="Source checkout as 'owner/name=path' (repeatable) — needed to validate "
+        "globs/symbols against real code.",
+    ),
+):
+    """Validate the manifest: pages exist, globs resolve, symbols present in the checkouts.
+
+    Catches *manifest* drift (a rename/move that silently breaks anchor mapping) before
+    it costs you a missed doc update. Exits non-zero if there are hard issues.
+    """
+    from .scaffold import doctor as run_doctor
+
+    checkouts: dict[str, Path] = {}
+    for item in checkout or []:
+        if "=" not in item:
+            raise typer.BadParameter(f"--checkout must be 'owner/name=path', got {item!r}")
+        repo, _, path = item.partition("=")
+        checkouts[repo] = Path(path)
+
+    try:
+        report = run_doctor(docs_repo, checkouts)
+    except FileNotFoundError as exc:
+        typer.echo(f"docsync: {exc}\nRun `docsync init` first.")
+        raise typer.Exit(2) from exc
+
+    for pg in report.missing_pages:
+        typer.echo(f"  ✗ missing page: {pg}")
+    for d in report.dead_globs:
+        typer.echo(f"  ✗ dead glob: {d.page} -> {d.repo} :: {d.glob}")
+    for r in report.unmapped_repos:
+        typer.echo(f"  ? no checkout for repo: {r} (pass --checkout {r}=/path to validate it)")
+    for m in report.missing_symbols:
+        typer.echo(f"  ! symbol not found: {m.page} -> {m.repo} :: {m.symbol}")
+
+    if report.ok:
+        typer.echo("docsync: manifest OK.")
+    else:
+        typer.echo("docsync: manifest has issues (see above).")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
