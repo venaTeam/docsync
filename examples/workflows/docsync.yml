@@ -33,11 +33,12 @@ jobs:
 
       - uses: keephq/docsync@v0.1.0
         with:
-          src-repo: ${{ github.event.client_payload.repo || inputs.src-repo }}
-          base: ${{ github.event.client_payload.base_sha || inputs.base }}
-          head: ${{ github.event.client_payload.head_sha || inputs.head }}
-          pr-number: ${{ github.event.client_payload.pr_number }}
-          pr-title: ${{ github.event.client_payload.pr_title }}
+          # On repository_dispatch these are empty, so the action derives
+          # repo/base/head/PR from the event payload itself (--from-event).
+          # On workflow_dispatch the manual inputs drive an explicit run.
+          src-repo: ${{ inputs.src-repo }}
+          base: ${{ inputs.base }}
+          head: ${{ inputs.head }}
           docs-path: "."
           open-pr: "true"
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
