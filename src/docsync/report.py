@@ -95,15 +95,25 @@ def console_summary(result: PipelineResult) -> str:
 
 
 def bootstrap_console_summary(result: BootstrapResult) -> str:
-    """Short terminal summary for `docsync bootstrap`."""
+    """Short terminal summary for `docsync bootstrap`.
+
+    Lists every planned page with its status: `✓` authored, `·` dropped, or `•`
+    planned-but-not-yet-authored (the plan-only case, where outcomes are empty).
+    """
     authored = result.authored()
     out = [
         f"docsync bootstrap: {len(result.plan.pages)} page(s) planned, "
         f"{len(authored)} authored, {len(result.skipped)} skipped (collisions)."
     ]
-    for o in result.outcomes:
-        mark = "✓" if o.applied else "·"
-        out.append(f"  {mark} {o.page_path} — {o.note}")
+    by_outcome = {o.page_path: o for o in result.outcomes}
+    for p in result.plan.pages:
+        o = by_outcome.get(p.page_path)
+        if o is None:  # plan-only: planned but not authored
+            srcs = f"  ← {', '.join(p.source_paths[:3])}" if p.source_paths else ""
+            out.append(f"  • {p.page_path} — {p.title}{srcs}")
+        else:
+            mark = "✓" if o.applied else "·"
+            out.append(f"  {mark} {p.page_path} — {o.note}")
     for path in result.skipped:
         out.append(f"  ⤫ {path} — skipped: already exists")
     cost_line = render_usage_console(result.usage)
