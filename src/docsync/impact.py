@@ -373,11 +373,20 @@ def map_impact(
     if not candidates:
         return []
 
-    # Anchors that autopass don't need the judge; everything else does.
+    # Anchors that autopass don't need the judge; everything else does. A page marked
+    # `judge_required` in the manifest (narrative/concept pages with broad subsystem
+    # anchors) is NEVER autopassed — the judge confirms a real invalidation first, so a
+    # broad anchor doesn't fire a costly edit on every unrelated change in the subsystem.
     autopass_paths: set[str] = set()
     to_judge: list[ImpactCandidate] = []
     for cand in candidates:
-        if config.anchor_autopass and cand.source == CandidateSource.ANCHOR:
+        manifest_page = manifest.page(cand.page_path)
+        judge_required = bool(manifest_page and manifest_page.judge_required)
+        if (
+            config.anchor_autopass
+            and cand.source == CandidateSource.ANCHOR
+            and not judge_required
+        ):
             autopass_paths.add(cand.page_path)
         else:
             to_judge.append(cand)
