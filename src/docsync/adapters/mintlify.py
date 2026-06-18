@@ -311,6 +311,87 @@ class MintlifyAdapter(DocAdapter):
                 return len(line) - len(stripped)
         return 2
 
+    def set_nav_sections(
+        self, docs_root: Path, ordered_sections: list[tuple[str, list[str]]]
+    ) -> list[str]:
+        """Write nav groups in the given order; refs are already extensionless routes."""
+        modified: list[str] = []
+        for name in (_DOCS_JSON, _MINT_JSON):
+            path = Path(docs_root) / name
+            if not path.exists():
+                continue
+            if self._apply_sections(path, ordered_sections):
+                modified.append(name)
+        return modified
+
+    def _apply_sections(
+        self, path: Path, ordered_sections: list[tuple[str, list[str]]]
+    ) -> bool:
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return False
+        indent = self._detect_indent(raw)
+        groups = self._groups_list(data)
+
+        # Every route already in the nav (any group) — for cross-group set-union.
+        existing: set[str] = set()
+        for grp in groups:
+            if isinstance(grp, dict):
+                existing.update(p for p in grp.get("pages", []) if isinstance(p, str))
+
+        changed = False
+        for section, routes in ordered_sections:
+            target = next(
+                (g for g in groups if isinstance(g, dict) and g.get("group") == section),
+                None,
+            )
+            if target is None:
+                target = {"group": section, "pages": []}
+                groups.append(target)  # new sections append in reading-flow order
+                changed = True
+            for ref in routes:
+                if ref not in existing:
+                    target.setdefault("pages", []).append(ref)
+                    existing.add(ref)
+                    changed = True
+
+        if changed:
+            path.write_text(json.dumps(data, indent=indent) + "\n", encoding="utf-8")
+        return changed
+
+    def ensure_valid_docs_json(self, docs_root: Path) -> bool:
+        """Create/repair docs.json so an empty scaffold renders (e.g. required colors)."""
+        path = Path(docs_root) / _DOCS_JSON
+        defaults = {
+            "$schema": "https://mintlify.com/docs.json",
+            "theme": "mint",
+            "name": "Documentation",
+            "colors": {"primary": "#16A34A", "light": "#16A34A", "dark": "#16A34A"},
+            "navigation": {"groups": []},
+        }
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(defaults, indent=2) + "\n", encoding="utf-8")
+            return True
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return False
+        indent = self._detect_indent(raw)
+        changed = False
+        for key, value in defaults.items():
+            if key == "$schema":
+                continue
+            if key not in data:
+                data[key] = value
+                changed = True
+        if changed:
+            path.write_text(json.dumps(data, indent=indent) + "\n", encoding="utf-8")
+        return changed
+
     def _register_in_file(self, path: Path, refs: list[str], group: str) -> bool:
         """Set-union `refs` into `group` within one nav file. True if it changed."""
         try:

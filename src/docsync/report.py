@@ -95,10 +95,10 @@ def console_summary(result: PipelineResult) -> str:
 
 
 def bootstrap_console_summary(result: BootstrapResult) -> str:
-    """Short terminal summary for `docsync bootstrap`.
+    """Short terminal summary for `docsync bootstrap`, grouped by IA section.
 
-    Lists every planned page with its status: `✓` authored, `·` dropped, or `•`
-    planned-but-not-yet-authored (the plan-only case, where outcomes are empty).
+    Lists pages under their section (in reading-flow order) with status: `✓` authored,
+    `·` dropped, or `•` planned-but-not-yet-authored (the plan-only case).
     """
     authored = result.authored()
     out = [
@@ -106,14 +106,15 @@ def bootstrap_console_summary(result: BootstrapResult) -> str:
         f"{len(authored)} authored, {len(result.skipped)} skipped (collisions)."
     ]
     by_outcome = {o.page_path: o for o in result.outcomes}
-    for p in result.plan.pages:
-        o = by_outcome.get(p.page_path)
-        if o is None:  # plan-only: planned but not authored
-            srcs = f"  ← {', '.join(p.source_paths[:3])}" if p.source_paths else ""
-            out.append(f"  • {p.page_path} — {p.title}{srcs}")
-        else:
-            mark = "✓" if o.applied else "·"
-            out.append(f"  {mark} {p.page_path} — {o.note}")
+    for section, pages in result.plan.ordered_sections():
+        out.append(f"  [{section}]")
+        for p in pages:
+            o = by_outcome.get(p.page_path)
+            if o is None:  # plan-only: planned but not authored
+                out.append(f"    • {p.page_path} — {p.title} ({p.kind})")
+            else:
+                mark = "✓" if o.applied else "·"
+                out.append(f"    {mark} {p.page_path} — {o.note}")
     for path in result.skipped:
         out.append(f"  ⤫ {path} — skipped: already exists")
     cost_line = render_usage_console(result.usage)
@@ -122,27 +123,28 @@ def bootstrap_console_summary(result: BootstrapResult) -> str:
     return "\n".join(out)
 
 
-def bootstrap_pr_body(result: BootstrapResult, *, group: str) -> str:
-    """Markdown PR body for a bootstrap run: pages authored + nav + manifest notes."""
+def bootstrap_pr_body(result: BootstrapResult) -> str:
+    """Markdown PR body for a bootstrap run: the authored site, by section."""
     authored = result.authored()
+    authored_paths = {o.page_path for o in authored}
     lines: list[str] = []
-    lines.append(f"## docsync — bootstrapped documentation for `{result.repo}`")
+    lines.append(f"## docsync — bootstrapped documentation site for `{result.repo}`")
     lines.append("")
     lines.append(
-        f"Generated {len(authored)} new page(s) from a read-only scan of the source "
-        f"repo, registered under the **{group}** nav group, with manifest anchors so "
-        "`docsync run` can keep them in sync going forward."
+        f"Generated {len(authored)} new page(s) across a sequenced information "
+        "architecture, with manifest anchors (narrative pages judge-gated) so "
+        "`docsync run` keeps the whole site in sync with the code going forward."
     )
     lines.append("")
     if authored:
-        lines.append(f"### Authored {len(authored)} page(s)")
-        for o in authored:
-            planned = next((p for p in result.plan.pages if p.page_path == o.page_path), None)
-            title = f" — {planned.title}" if planned else ""
-            lines.append(f"- **`{o.page_path}`**{title}")
-            for w in (o.validation.warnings if o.validation else []):
-                lines.append(f"  - ⚠️ {w}")
-        lines.append("")
+        for section, pages in result.plan.ordered_sections():
+            sec = [p for p in pages if p.page_path in authored_paths]
+            if not sec:
+                continue
+            lines.append(f"### {section}")
+            for p in sec:
+                lines.append(f"- **`{p.page_path}`** — {p.title} ({p.kind})")
+            lines.append("")
 
     dropped = [o for o in result.outcomes if not o.applied]
     if dropped:

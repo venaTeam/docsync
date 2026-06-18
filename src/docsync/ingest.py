@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .models import RepoDigest, SourceUnit
 
-__all__ = ["walk_repo", "extract_symbols", "read_excerpt"]
+__all__ = ["walk_repo", "walk_repos", "extract_symbols", "read_excerpt"]
 
 # Sensible defaults so a caller can `walk_repo(path)` and get just source code.
 DEFAULT_INCLUDE = ("*.py", "*.ts", "*.tsx")
@@ -163,6 +163,28 @@ def walk_repo(
                 return RepoDigest(repo=repo_id, root=str(root), units=units)
 
     return RepoDigest(repo=repo_id, root=str(root), units=units)
+
+
+def walk_repos(
+    specs: list[tuple[str, str | Path]],
+    *,
+    include_globs: tuple[str, ...] = DEFAULT_INCLUDE,
+    exclude_dirs: frozenset[str] = DEFAULT_EXCLUDE_DIRS,
+    max_files: int = 0,
+) -> list[RepoDigest]:
+    """Read-only walk of several repos → one :class:`RepoDigest` each.
+
+    `specs` is a list of ``(repo_id, path)`` pairs. Used by `docsync bootstrap` to
+    ingest a whole platform (e.g. all four Keep services) for a cross-repo doc plan.
+    Digests are returned in spec order; each walk is independent and read-only.
+    """
+    return [
+        walk_repo(
+            path, repo=repo_id, include_globs=include_globs,
+            exclude_dirs=exclude_dirs, max_files=max_files,
+        )
+        for repo_id, path in specs
+    ]
 
 
 def read_excerpt(root: str | Path, rel_path: str, *, max_chars: int = _EXCERPT_MAX_CHARS) -> str:

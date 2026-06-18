@@ -77,6 +77,8 @@ def _manifest_page_dict(page: ManifestPage) -> dict:
         out["max_diff_lines"] = page.max_diff_lines
     if page.allow_frontmatter_edit:
         out["allow_frontmatter_edit"] = True
+    if page.judge_required:
+        out["judge_required"] = True
     return out
 
 

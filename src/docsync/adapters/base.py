@@ -72,3 +72,23 @@ class DocAdapter(ABC):
         Default: no-op for frameworks without a navigation manifest.
         """
         return []
+
+    def set_nav_sections(
+        self, docs_root: Path, ordered_sections: list[tuple[str, list[str]]]
+    ) -> list[str]:
+        """Register several nav sections in reading-flow order.
+
+        `ordered_sections` is `[(section_title, [route, ...]), ...]` in the desired
+        sequence; `route` is an extensionless page route. Idempotent (set-union per
+        section). Returns nav files modified. Default: no-op.
+        """
+        return []
+
+    def ensure_valid_docs_json(self, docs_root: Path) -> bool:
+        """Ensure the framework's nav/config file exists and has its required fields.
+
+        Used when bootstrapping into an empty scaffold so the site renders. Returns
+        True if anything was created/changed. Default: no-op for frameworks with no
+        config file.
+        """
+        return False

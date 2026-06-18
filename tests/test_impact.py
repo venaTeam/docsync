@@ -307,6 +307,47 @@ def test_not_affected_verdict_is_dropped(tmp_path: Path):
     assert impacted == []
 
 
+def test_judge_required_page_routes_through_judge_despite_anchor(tmp_path: Path):
+    # A narrative page with a broad anchor + judge_required must NOT autopass: the judge
+    # decides, so an unrelated subsystem change can be skipped. The reference page next
+    # to it (no judge_required) still autopasses without a judge call.
+    diff = make_diff(paths=["src/services/dedup/engine.py"])
+    manifest = make_manifest(
+        page("concepts/dedup.mdx", source(globs=["src/services/dedup/*"]), judge_required=True),
+        page("reference/dedup.mdx", source(globs=["src/services/dedup/*"])),
+    )
+    config = DocsyncConfig()  # anchor_autopass True
+
+    def _verdict_for(msg):
+        # Judge says the narrative page is NOT actually invalidated by this change.
+        return JudgeVerdict(page_path="", affected=False, confidence=0.9, reason="no narrative change")
+
+    client = FakeClient(_verdict_for)
+    impacted = map_impact(diff, manifest, tmp_path, config, client=client)
+
+    paths = {i.page_path for i in impacted}
+    # Reference page autopassed; narrative page was judged and dropped (affected=False).
+    assert paths == {"reference/dedup.mdx"}
+    # The judge was invoked exactly once — for the judge_required page only.
+    assert len(client.messages.calls) == 1
+    assert "concepts/dedup.mdx" in client.messages.calls[0]["messages"][0]["content"]
+
+
+def test_judge_required_page_kept_when_judge_confirms(tmp_path: Path):
+    diff = make_diff(paths=["src/services/dedup/engine.py"])
+    manifest = make_manifest(
+        page("concepts/dedup.mdx", source(globs=["src/services/dedup/*"]), judge_required=True),
+    )
+    config = DocsyncConfig(judge_confidence_threshold=0.5)
+
+    def _verdict_for(_msg):
+        return JudgeVerdict(page_path="", affected=True, confidence=0.8, reason="flow changed")
+
+    impacted = map_impact(diff, manifest, tmp_path, config, client=FakeClient(_verdict_for))
+    assert [i.page_path for i in impacted] == ["concepts/dedup.mdx"]
+    assert impacted[0].confidence == 0.8  # judged confidence, not autopass 1.0
+
+
 def test_judge_verdict_page_path_pinned_to_candidate(tmp_path: Path):
     diff = make_diff(paths=["src/routes/alerts.py"])
     manifest = make_manifest(page("api/alerts.mdx", source(globs=["src/routes/alerts.py"])))
