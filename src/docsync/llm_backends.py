@@ -33,6 +33,10 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+# An entire reply wrapped in one ``` fence (any language tag), e.g. the model
+# returning ```mdx\n<page>\n```. Anchored start+end so an *internal* fence in the
+# document body (a code sample) is never mistaken for the wrapper.
+_OUTER_FENCE_RE = re.compile(r"\A\s*```[A-Za-z0-9]*\n(.*?)\n?```\s*\Z", re.DOTALL)
 
 
 def _system_text(system: Any) -> str:
@@ -78,6 +82,27 @@ def _extract_json(text: str) -> str:
     return text[start : end + 1]
 
 
+def _single_text_field(model: type[BaseModel]) -> str | None:
+    """Name of the sole required `str` field, or None.
+
+    Identifies "whole-document" output models like `AuthoredPage(content: str)`,
+    where coaxing the model to emit the document *inside JSON* is fragile (the
+    document itself contains braces, quotes, and code fences). For those we take the
+    raw reply as the field value instead of parsing JSON.
+    """
+    required = [n for n, f in model.model_fields.items() if f.is_required()]
+    if len(required) != 1:
+        return None
+    name = required[0]
+    return name if model.model_fields[name].annotation is str else None
+
+
+def _unwrap_outer_fence(text: str) -> str:
+    """Strip a single ``` fence wrapping the *entire* reply, then trim surrounding space."""
+    m = _OUTER_FENCE_RE.match(text)
+    return (m.group(1) if m else text).strip()
+
+
 class _Resp:
     def __init__(self, parsed_output: BaseModel, usage: Any = None):
         self.parsed_output = parsed_output
@@ -114,6 +139,13 @@ class _Messages:
               system: Any = None, messages: Any = None, **_ignored: Any) -> _Resp:
         """Mimic anthropic .messages.parse(..., output_format=Model) via the CLI."""
         mdl = model or self._default_model or "claude-opus-4-8"
+        text_field = _single_text_field(output_format)
+        if text_field is not None:
+            return self._parse_text(output_format, text_field, mdl, system, messages)
+        return self._parse_json(output_format, mdl, system, messages)
+
+    def _parse_json(self, output_format, mdl, system, messages) -> _Resp:
+        """Structured (multi-field) outputs: prompt for one JSON object, validate it."""
         schema = json.dumps(output_format.model_json_schema(), separators=(",", ":"))
         sys_text = (
             _system_text(system)
@@ -131,10 +163,38 @@ class _Messages:
                 return _Resp(obj, usage=usage)
             except (ValueError, ValidationError) as exc:
                 last_err = exc
-                # Tighten the instruction on the retry.
                 user_text += "\n\nYour previous reply was not valid JSON for the schema. " \
                              "Return ONLY the JSON object."
         raise RuntimeError(f"claude CLI did not return schema-valid JSON: {last_err}")
+
+    def _parse_text(self, output_format, field, mdl, system, messages) -> _Resp:
+        """Whole-document output: take the raw reply as the single string field.
+
+        The model returns the document directly (not JSON), so a full MDX page with
+        its own braces and code fences can't corrupt parsing. We strip only an outer
+        fence wrapping the entire reply and reject an empty body.
+        """
+        sys_text = (
+            _system_text(system)
+            + "\n\nRespond with ONLY the complete document content — the exact text of "
+            "the file, starting at its first character. No commentary, no JSON, and do "
+            "NOT wrap the whole document in a code fence."
+        )
+        user_text = _user_text(messages)
+
+        last_err: Exception | None = None
+        for _ in range(2):
+            raw, usage = self._run(mdl, sys_text, user_text)
+            content = _unwrap_outer_fence(raw)
+            try:
+                if not content.strip():
+                    raise ValueError("empty document reply")
+                return _Resp(output_format.model_validate({field: content}), usage=usage)
+            except (ValueError, ValidationError) as exc:
+                last_err = exc
+                user_text += "\n\nYour previous reply was empty or malformed. Return the " \
+                             "full document text now."
+        raise RuntimeError(f"claude CLI did not return a usable document: {last_err}")
 
 
 class ClaudeCodeClient:
