@@ -1,0 +1,46 @@
+# docsync receiver — install in venaTeam/keep-developer-docs on a dedicated review
+# branch off `main`. It runs when a service repo dispatches a `docsync` event and opens
+# a docs PR with the surgical updates.
+#
+# Staged in docsync/deploy/ for review; NOT applied to the docs repo.
+#
+# Required secrets in keep-developer-docs:
+#   ANTHROPIC_API_KEY  — for the `api` backend (Opus edits + Haiku judge).
+#   DOCSYNC_GH_TOKEN   — token with `contents:read` on the venaTeam/* service repos, so
+#                        docsync can fetch the diff via the GitHub API (no clone needed).
+# The default GITHUB_TOKEN (below) is used to open the docs PR in this repo.
+name: docsync
+
+on:
+  repository_dispatch:
+    types: [docsync]
+
+permissions:
+  contents: write # commit the doc updates to a branch
+  pull-requests: write # open the docs PR
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # docsync is not published yet — install from its repo once it has a remote.
+      # Replace <org>/docsync with the real location (or `pip install docsync` after
+      # publishing). See deploy/README.md "Publishing docsync".
+      - name: Install docsync
+        run: pip install "git+https://github.com/<org>/docsync.git"
+
+      - name: Run docsync against the dispatched change
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.DOCSYNC_GH_TOKEN }} # read service repos via API
+        run: |
+          docsync run \
+            --from-event "$GITHUB_EVENT_PATH" \
+            --docs-repo . \
+            --backend api \
+            --open-pr
