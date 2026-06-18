@@ -194,18 +194,30 @@ def run(
             typer.echo("docsync: docs repo is not a git repo — skipped patch (changes written).")
 
 
+def _parse_repo_spec(item: str) -> tuple[str, Path]:
+    """Parse a `--src-repo` value: `name=path` or bare `path` (name = dir basename)."""
+    if "=" in item:
+        name, _, path = item.partition("=")
+        name, path = name.strip(), path.strip()
+    else:
+        path = item.strip()
+        name = Path(path).resolve().name
+    p = Path(path)
+    if not p.exists():
+        raise typer.BadParameter(f"--src-repo path does not exist: {path}")
+    return name, p
+
+
 @app.command()
 def bootstrap(
     docs_repo: Path = typer.Option(..., help="Path to the docs repo checkout (writes go here)."),
-    src_repo: str = typer.Option(..., help="Local path to the service repo to document (read-only)."),
-    repo: Optional[str] = typer.Option(
-        None, help="Identifier stamped on manifest anchors (default: src repo dir name)."
-    ),
-    group: str = typer.Option(
-        bootstrap_mod.DEFAULT_NAV_GROUP, help="Nav group new pages are filed under."
+    src_repo: List[str] = typer.Option(
+        ...,
+        help="Service repo to document (read-only), as 'name=path' or a bare path. "
+        "Repeatable — pass several to generate a cross-repo platform site.",
     ),
     plan_only: bool = typer.Option(
-        False, help="Plan pages and print the outline only — no authoring (no Opus spend)."
+        False, help="Plan the site and print the outline only — no authoring (no Opus spend)."
     ),
     dry_run: bool = typer.Option(True, help="Compute + report only; do not write or open a PR."),
     open_pr: bool = typer.Option(False, help="Branch, commit, push, and open a docs PR."),
@@ -220,17 +232,16 @@ def bootstrap(
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
     backend: str = typer.Option("api", help="LLM backend: 'api' or 'claude-code'."),
 ):
-    """Generate docs FROM SCRATCH: ingest a repo -> plan -> author -> validate -> (PR | patch).
+    """Generate a docs SITE from scratch: ingest repos -> plan an IA -> author -> validate.
 
-    Reads `src_repo` read-only; writes new pages, a `docs.json` nav group, and
-    manifest anchors into `docs_repo` (point this at a shadow copy to keep the real
-    docs repo untouched).
+    Reads each `--src-repo` read-only; plans a sequenced, sectioned site (Getting Started
+    -> Concepts -> Architecture -> Reference -> Operations) with narrative + reference
+    pages, then writes pages, ordered nav, and manifest anchors into `docs_repo` (point
+    this at a shadow/empty scaffold to keep the real docs repo untouched).
     """
     from .llm_backends import get_client
 
-    src_path = Path(src_repo)
-    if not src_path.exists():
-        raise typer.BadParameter(f"--src-repo path does not exist: {src_repo}")
+    repos = [_parse_repo_spec(item) for item in src_repo]
 
     config = cfg.load_config(docs_repo)
     if max_parallel is not None:
@@ -238,13 +249,12 @@ def bootstrap(
 
     client = get_client(backend)
     result = bootstrap_mod.run_bootstrap(
-        src_path, docs_repo, config,
-        repo=repo, group=group, max_pages=max_pages,
-        check_links=check_links, plan_only=plan_only, client=client,
+        repos, docs_repo, config,
+        max_pages=max_pages, check_links=check_links, plan_only=plan_only, client=client,
     )
 
     typer.echo(report_mod.bootstrap_console_summary(result))
-    body = report_mod.bootstrap_pr_body(result, group=group)
+    body = report_mod.bootstrap_pr_body(result)
     if report_path:
         report_path.write_text(body, encoding="utf-8")
         typer.echo(f"docsync: report written to {report_path}")
@@ -266,7 +276,7 @@ def bootstrap(
     typer.echo(f"docsync: wrote {len(written)} path(s) (pages + nav + manifest).")
 
     if open_pr:
-        slug = (repo or result.repo).split("/")[-1]
+        slug = repos[0][0].split("/")[-1] if repos else "platform"
         url = pr_mod.open_pr(
             docs_repo,
             branch=f"docsync/bootstrap-{slug}",
