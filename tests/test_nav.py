@@ -147,3 +147,69 @@ def test_register_with_no_nav_file_returns_empty(tmp_path: Path) -> None:
         tmp_path, ["reference/alerts.mdx"], group=_GROUP
     )
     assert modified == []
+
+
+# ---------------------------------------------------------------------------
+# set_nav_sections — ordered, idempotent
+# ---------------------------------------------------------------------------
+
+
+def test_set_nav_sections_writes_groups_in_order(tmp_path):
+    _write_docs_json(tmp_path, [{"group": "Existing", "pages": ["intro"]}])
+    a = _adapter()
+    modified = a.set_nav_sections(tmp_path, [
+        ("Getting Started", ["getting-started/intro"]),
+        ("Architecture", ["architecture/flow"]),
+        ("Reference", ["reference/alerts"]),
+    ])
+    assert "docs.json" in modified
+    nav = json.loads((tmp_path / "docs.json").read_text())
+    order = [g["group"] for g in nav["navigation"]["groups"]]
+    # Existing group stays first; new sections appended in the given reading-flow order.
+    assert order == ["Existing", "Getting Started", "Architecture", "Reference"]
+    pages = {g["group"]: g["pages"] for g in nav["navigation"]["groups"]}
+    assert pages["Architecture"] == ["architecture/flow"]
+
+
+def test_set_nav_sections_is_idempotent(tmp_path):
+    _write_docs_json(tmp_path, [])
+    a = _adapter()
+    sections = [("Reference", ["reference/a", "reference/b"])]
+    a.set_nav_sections(tmp_path, sections)
+    first = (tmp_path / "docs.json").read_text()
+    assert a.set_nav_sections(tmp_path, sections) == []  # no change on re-run
+    assert (tmp_path / "docs.json").read_text() == first
+
+
+def test_set_nav_sections_skips_route_already_in_another_group(tmp_path):
+    _write_docs_json(tmp_path, [{"group": "Existing", "pages": ["reference/a"]}])
+    a = _adapter()
+    a.set_nav_sections(tmp_path, [("Reference", ["reference/a", "reference/b"])])
+    nav = json.loads((tmp_path / "docs.json").read_text())
+    pages = {g["group"]: g["pages"] for g in nav["navigation"]["groups"]}
+    assert pages["Existing"] == ["reference/a"]          # untouched
+    assert pages["Reference"] == ["reference/b"]         # only the new route added
+
+
+# ---------------------------------------------------------------------------
+# ensure_valid_docs_json
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_valid_docs_json_creates_when_missing(tmp_path):
+    a = _adapter()
+    assert a.ensure_valid_docs_json(tmp_path) is True
+    nav = json.loads((tmp_path / "docs.json").read_text())
+    assert "colors" in nav and "navigation" in nav and nav["navigation"]["groups"] == []
+    # Idempotent: a valid file is left unchanged.
+    assert a.ensure_valid_docs_json(tmp_path) is False
+
+
+def test_ensure_valid_docs_json_adds_missing_required_field(tmp_path):
+    # A minimal docs.json lacking `colors` (the error we hit live) gets it added.
+    (tmp_path / "docs.json").write_text(
+        json.dumps({"name": "X", "navigation": {"groups": []}}, indent=2) + "\n"
+    )
+    a = _adapter()
+    assert a.ensure_valid_docs_json(tmp_path) is True
+    assert "colors" in json.loads((tmp_path / "docs.json").read_text())
