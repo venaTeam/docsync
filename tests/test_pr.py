@@ -120,3 +120,10 @@ def test_open_pr_no_push_returns_branch(tmp_path: Path, monkeypatch):
     assert url == "docsync/svc-abc12345"
     assert fake.cmds_starting("gh", "pr", "create") == []
     assert not any("push" in c for c in fake.calls)
+
+
+def test_write_patch_returns_none_on_non_git_dir(tmp_path):
+    # A fresh from-scratch scaffold isn't a git repo; write_patch must degrade to
+    # None (not crash) so already-written pages aren't lost to a failed patch step.
+    assert pr.write_patch(tmp_path, tmp_path / "out.patch") is None
+    assert not (tmp_path / "out.patch").exists()

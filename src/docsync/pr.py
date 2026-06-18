@@ -28,9 +28,17 @@ def branch_name(repo: str, head_sha: str) -> str:
     return f"docsync/{slug}-{head_sha[:8]}"
 
 
-def write_patch(docs_repo: Path, out_path: Path) -> Path:
-    """Write the working-tree diff (page changes) to a patch file for inspection."""
-    diff = _git(Path(docs_repo), "diff")
+def write_patch(docs_repo: Path, out_path: Path) -> Path | None:
+    """Write the working-tree diff (page changes) to a patch file for inspection.
+
+    Returns None when the docs repo isn't a git repo (e.g. a fresh from-scratch
+    scaffold) — the pages are written regardless, so a missing patch must not crash
+    the command.
+    """
+    try:
+        diff = _git(Path(docs_repo), "diff")
+    except RuntimeError:
+        return None
     out_path.write_text(diff, encoding="utf-8")
     return out_path
 

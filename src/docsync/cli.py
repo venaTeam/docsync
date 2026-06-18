@@ -188,7 +188,10 @@ def run(
         typer.echo(f"docsync: PR -> {url}")
     else:
         patch = pr_mod.write_patch(docs_repo, docs_repo / "docsync.patch")
-        typer.echo(f"docsync: patch written to {patch}")
+        if patch:
+            typer.echo(f"docsync: patch written to {patch}")
+        else:
+            typer.echo("docsync: docs repo is not a git repo — skipped patch (changes written).")
 
 
 @app.command()
@@ -276,7 +279,10 @@ def bootstrap(
         typer.echo(f"docsync: PR -> {url}")
     else:
         patch = pr_mod.write_patch(docs_repo, docs_repo / "docsync-bootstrap.patch")
-        typer.echo(f"docsync: patch written to {patch}")
+        if patch:
+            typer.echo(f"docsync: patch written to {patch}")
+        else:
+            typer.echo("docsync: docs repo is not a git repo — skipped patch (pages written).")
 
 
 @app.command()
