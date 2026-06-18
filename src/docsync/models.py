@@ -12,7 +12,7 @@ validates against pydantic models directly.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -102,21 +102,86 @@ class RepoDigest(BaseModel):
         return seen
 
 
+# Page kinds steer both the author prompt and how the page is kept live:
+#   reference — code-anchored API/data-model pages (precise anchors, judge-autopass)
+#   concept   — narrative explanations of a subsystem/architecture (broad anchors, judged)
+#   guide     — task-oriented (getting-started/how-to), loosely anchored, judged
+PageKind = Literal["concept", "guide", "reference"]
+
+
+class PlannedSource(BaseModel):
+    """A code anchor for a planned page — repo-qualified, for multi-repo sites."""
+
+    repo: str  # which source repo (matches a RepoDigest.repo / CodeDiff.repo)
+    globs: list[str] = Field(default_factory=list)  # fnmatch globs over changed paths
+    symbols: list[str] = Field(default_factory=list)  # symbol names (trailing * = prefix)
+
+
 class PlannedPage(BaseModel):
     """One doc page the planner proposes to author (structured LLM output)."""
 
     page_path: str  # new .mdx path relative to docs_root, e.g. "reference/alerts.mdx"
     title: str
-    group: str = "Reference (docsync)"  # nav group to file the page under
+    kind: PageKind = "reference"
+    section: str = "Reference"  # nav group / section heading
+    order: int = 0  # position within the section (ascending)
     summary: str = ""  # what the page should cover (steers the author stage)
-    source_paths: list[str] = Field(default_factory=list)  # units this page documents
-    symbols: list[str] = Field(default_factory=list)  # anchor symbols for the manifest
+    sources: list[PlannedSource] = Field(default_factory=list)  # multi-repo anchors
+
+    @property
+    def judge_required(self) -> bool:
+        """Narrative pages route through the judge (not anchor-autopass) when updated.
+
+        A concept/guide page anchors to a whole subsystem, so an autopass would fire a
+        costly Opus edit on every change there; routing through the judge means an edit
+        only happens when the change actually invalidates the page.
+        """
+        return self.kind in ("concept", "guide")
+
+
+# Canonical section order for a generated site's reading flow; unknown sections sort
+# after these (stable by first appearance). Used to emit nav groups in sequence.
+SECTION_ORDER: tuple[str, ...] = (
+    "Getting Started",
+    "Concepts",
+    "Architecture",
+    "Reference",
+    "Operations",
+)
 
 
 class DocPlan(BaseModel):
-    """The planner's structured response: the set of pages to author."""
+    """The planner's structured response: a flat, section-tagged set of pages.
+
+    Kept flat (not nested sections) because flat structured output is far more reliable
+    through the CLI backend; ordered sections are derived in code via `ordered_sections`.
+    """
 
     pages: list[PlannedPage] = Field(default_factory=list)
+
+    def ordered_sections(self) -> list[tuple[str, list[PlannedPage]]]:
+        """Group pages into sections, ordered by the canonical reading flow.
+
+        Sections in `SECTION_ORDER` come first in that order; any others follow in
+        first-appearance order. Pages within a section are sorted by `order` then title.
+        """
+        seen: list[str] = []
+        buckets: dict[str, list[PlannedPage]] = {}
+        for p in self.pages:
+            if p.section not in buckets:
+                buckets[p.section] = []
+                seen.append(p.section)
+            buckets[p.section].append(p)
+
+        def section_key(name: str) -> tuple[int, int]:
+            canonical = SECTION_ORDER.index(name) if name in SECTION_ORDER else len(SECTION_ORDER)
+            return (canonical, seen.index(name))
+
+        out: list[tuple[str, list[PlannedPage]]] = []
+        for name in sorted(seen, key=section_key):
+            pages = sorted(buckets[name], key=lambda p: (p.order, p.title))
+            out.append((name, pages))
+        return out
 
 
 class AuthoredPage(BaseModel):
@@ -146,6 +211,10 @@ class ManifestPage(BaseModel):
     max_diff_lines: int = 60  # diff-size guardrail (net changed lines per page)
     max_diff_pct: float = 0.5  # ...or this fraction of the page, whichever is larger
     allow_frontmatter_edit: bool = False
+    # When True, an anchor hit does NOT autopass — the page is routed through the judge
+    # so an edit fires only on a confirmed invalidation. Set for narrative (concept/
+    # guide) pages whose broad subsystem anchors would otherwise over-trigger.
+    judge_required: bool = False
 
 
 class Manifest(BaseModel):
