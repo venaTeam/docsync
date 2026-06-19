@@ -37,3 +37,55 @@ def test_run_no_preflight_bypasses_the_gate(tmp_path: Path):
     result = runner.invoke(app, ["run", "--docs-repo", str(docs), "--no-preflight"])
     assert "preflight failed" not in result.output
     assert result.exit_code != 0  # still errors, just not at the pre-flight gate
+
+
+# ---------------------------------------------------------------------------
+# infer command (offline — fake client + patched run_infer / encoder)
+# ---------------------------------------------------------------------------
+
+
+def _infer_repo(tmp_path: Path) -> tuple[Path, Path]:
+    docs = tmp_path / "docs"
+    (docs / "reference").mkdir(parents=True)
+    (docs / "reference" / "alerts.mdx").write_text(
+        "---\ntitle: A\ndescription: d\n---\n\n# A\n", encoding="utf-8"
+    )
+    src = tmp_path / "svc"
+    (src / "src").mkdir(parents=True)
+    (src / "src" / "alerts.py").write_text("def get_alerts():\n    return []\n", encoding="utf-8")
+    return docs, src
+
+
+def test_infer_missing_embeddings_extra_exits_clean(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    docs, src = _infer_repo(tmp_path)
+    # A client shaped like the real one (has .messages) so MeteredClient can wrap it;
+    # the run still aborts cleanly when the encoder import fails.
+    monkeypatch.setattr(
+        "docsync.llm_backends.get_client", lambda backend: SimpleNamespace(messages=object())
+    )
+    monkeypatch.setattr(
+        "docsync.embeddings.default_encoder",
+        lambda *a, **k: (_ for _ in ()).throw(ImportError("no extra")),
+    )
+    result = runner.invoke(app, ["infer", "--docs-repo", str(docs), "--src-repo", f"svc={src}"])
+    assert result.exit_code == 0
+    assert "embeddings extra" in result.output
+
+
+def test_infer_dry_run_reports_without_writing(tmp_path: Path, monkeypatch):
+    from docsync.models import InferredPage, InferResult, ManifestSource
+
+    docs, src = _infer_repo(tmp_path)
+    canned = InferResult(pages=[InferredPage(
+        page_path="reference/alerts.mdx", kind="reference", confidence=0.9, status="anchored",
+        sources=[ManifestSource(repo="svc", globs=["src/alerts.py"], symbols=["get_alerts"])],
+    )])
+    monkeypatch.setattr("docsync.llm_backends.get_client", lambda backend: object())
+    monkeypatch.setattr("docsync.infer.run_infer", lambda *a, **k: canned)
+
+    result = runner.invoke(app, ["infer", "--docs-repo", str(docs), "--src-repo", f"svc={src}"])
+    assert result.exit_code == 0
+    assert "dry run" in result.output
+    assert not (docs / ".docsync" / "manifest.yml").exists()  # nothing written

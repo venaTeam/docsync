@@ -296,6 +296,72 @@ def bootstrap(
 
 
 @app.command()
+def infer(
+    docs_repo: Path = typer.Option(..., help="Docs repo with existing pages (writes anchors here)."),
+    src_repo: List[str] = typer.Option(
+        ...,
+        help="Source repo to anchor against (read-only), as 'name=path' or a bare path. "
+        "Repeatable — pass several to anchor a multi-repo site.",
+    ),
+    dry_run: bool = typer.Option(
+        True, help="Propose anchors and report only; do not touch the manifest."
+    ),
+    write: bool = typer.Option(
+        False, help="Write inferred anchors into .docsync/manifest.yml (same as --no-dry-run)."
+    ),
+    max_pages: Optional[int] = typer.Option(
+        None, help="Cap pages examined per run (cost control)."
+    ),
+    max_parallel: Optional[int] = typer.Option(
+        None, help="Max concurrent judge requests. Overrides config.max_parallel_requests."
+    ),
+    backend: str = typer.Option("api", help="LLM backend for the judge: 'api' or 'claude-code'."),
+    report_path: Optional[Path] = typer.Option(None, help="Write the console summary here."),
+):
+    """Infer manifest anchors for an EXISTING docs site (the brownfield onboarding path).
+
+    For each page not yet in the manifest: shortlist the source code it likely documents
+    (embeddings), have the judge confirm/sharpen the anchors, validate them against the
+    real tree, and merge the survivors into `.docsync/manifest.yml`. Reads each `--src-repo`
+    read-only. Needs the `embeddings` extra (`poetry install -E embeddings`).
+    """
+    from . import infer as infer_mod
+    from .llm_backends import get_client
+
+    repos = [_parse_repo_spec(item) for item in src_repo]
+    config = cfg.load_config(docs_repo)
+    if max_parallel is not None:
+        config.max_parallel_requests = max_parallel
+
+    client = get_client(backend)
+    try:
+        result = infer_mod.run_infer(repos, docs_repo, config, max_pages=max_pages, client=client)
+    except ImportError:
+        typer.echo(
+            "docsync: manifest inference needs the embeddings extra "
+            "(install with `poetry install -E embeddings`)."
+        )
+        raise typer.Exit(0) from None
+
+    summary = report_mod.infer_console_summary(result)
+    typer.echo(summary)
+    if report_path:
+        report_path.write_text(summary + "\n", encoding="utf-8")
+        typer.echo(f"docsync: report written to {report_path}")
+
+    if not result.anchored():
+        typer.echo("docsync: no anchors inferred; manifest unchanged.")
+        raise typer.Exit(0)
+
+    if dry_run and not write:
+        typer.echo("docsync: dry run — manifest unchanged. Use --write to apply.")
+        raise typer.Exit(0)
+
+    added = infer_mod.write_infer(result, docs_repo, config)
+    typer.echo(f"docsync: wrote {len(added)} anchor(s) to .docsync/manifest.yml.")
+
+
+@app.command()
 def map(  # noqa: A001 - intentional command name
     src_repo: str = typer.Option(...),
     base: str = typer.Option(...),
