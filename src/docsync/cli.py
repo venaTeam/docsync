@@ -432,24 +432,78 @@ def index(
 def init(
     docs_repo: Path = typer.Option(Path("."), help="Docs repo to scaffold .docsync/ into."),
     force: bool = typer.Option(False, help="Overwrite existing .docsync files."),
+    minimal: bool = typer.Option(
+        False,
+        help="Zero-config: auto-detect docs_root + adapter and write a minimal config "
+        "(no placeholder manifest).",
+    ),
+    detect: bool = typer.Option(
+        True, help="With --minimal, auto-detect docs_root from docs.json / the .mdx tree."
+    ),
+    infer: bool = typer.Option(
+        False,
+        help="After scaffolding, infer manifest anchors from --src-repo (implies --minimal).",
+    ),
+    src_repo: Optional[List[str]] = typer.Option(
+        None, help="Source repo(s) for --infer, as 'name=path' or a bare path. Repeatable."
+    ),
+    backend: str = typer.Option("api", help="LLM backend for --infer: 'api' or 'claude-code'."),
 ):
-    """Scaffold .docsync/{config.yml,manifest.yml,state/cursors.json} in a docs repo.
+    """Scaffold `.docsync/` in a docs repo (first step to adopting docsync).
 
-    First step to adopting docsync: creates a starter config + a commented manifest
-    template you then edit to map pages to their source code.
+    Default: a starter config + a commented manifest template you edit to map pages to
+    source code. `--minimal` instead auto-detects `docs_root`/adapter and writes a tiny
+    config with no placeholder manifest; add `--infer --src-repo name=path` to go straight
+    from empty to a populated, doctor-clean manifest in one command.
     """
-    from .scaffold import init_docs_repo
+    from .scaffold import detect_adapter, detect_docs_root, init_docs_repo
 
-    created = init_docs_repo(docs_repo, force=force)
-    if not created:
+    use_minimal = minimal or infer
+    created = init_docs_repo(docs_repo, force=force, minimal=use_minimal, detect=detect)
+    if not created and not infer:
         typer.echo("docsync: .docsync/ already present — nothing to do (use --force to overwrite).")
         return
     for p in created:
         typer.echo(f"  created {p}")
-    typer.echo(
-        f"docsync: scaffolded {len(created)} file(s). "
-        "Edit .docsync/manifest.yml to map pages to source code, then run `docsync doctor`."
-    )
+
+    if use_minimal:
+        root = detect_docs_root(docs_repo) if detect else "."
+        adapter = detect_adapter(docs_repo, root)
+        typer.echo(
+            f"docsync: detected docs_root='{root}'"
+            + (f", adapter={adapter}" if adapter else " (adapter unknown)")
+        )
+
+    if not infer:
+        hint = (
+            "Run `docsync infer --src-repo name=path` to populate the manifest, "
+            "or hand-author .docsync/manifest.yml."
+            if use_minimal
+            else "Edit .docsync/manifest.yml to map pages to source code, then run `docsync doctor`."
+        )
+        typer.echo(f"docsync: scaffolded {len(created)} file(s). {hint}")
+        return
+
+    # --infer: chain straight into inference against the given source checkout(s).
+    if not src_repo:
+        raise typer.BadParameter("--infer requires at least one --src-repo name=path")
+    from . import infer as infer_mod
+    from .llm_backends import get_client
+
+    repos = [_parse_repo_spec(item) for item in src_repo]
+    config = cfg.load_config(docs_repo)
+    client = get_client(backend)
+    try:
+        result = infer_mod.run_infer(repos, docs_repo, config, client=client)
+    except ImportError:
+        typer.echo(
+            "docsync: manifest inference needs the embeddings extra "
+            "(install with `poetry install -E embeddings`)."
+        )
+        raise typer.Exit(0) from None
+    typer.echo(report_mod.infer_console_summary(result))
+    added = infer_mod.write_infer(result, docs_repo, config)
+    typer.echo(f"docsync: wrote {len(added)} anchor(s) to .docsync/manifest.yml.")
 
 
 @app.command()

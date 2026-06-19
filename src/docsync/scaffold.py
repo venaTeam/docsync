@@ -59,6 +59,69 @@ def _config_template() -> str:
     )
 
 
+def _minimal_config_template(docs_root: str) -> str:
+    """A near-empty config that only pins non-default keys, with a pointer comment.
+
+    Everything in :class:`DocsyncConfig` is optional with a sane default, so a minimal
+    config need say nothing more than where the docs live (and only when that isn't the
+    repo root). Keeps the onboarding artifact small instead of an 8-field template.
+    """
+    lines = [
+        "# docsync config — only non-default keys are shown.",
+        "# See DocsyncConfig in models.py for every option and its default.",
+    ]
+    if docs_root and docs_root != ".":
+        lines.append(f'docs_root: "{docs_root}"')
+    return "\n".join(lines) + "\n"
+
+
+# --- detection (zero-config onboarding) ---------------------------------------
+
+
+def detect_docs_root(docs_repo: Path) -> str:
+    """Best-effort guess of `docs_root` (relative to *docs_repo*).
+
+    Prefers the directory holding a Mintlify ``docs.json``/``mint.json`` (the adapter
+    manifest); falls back to the common ancestor of the ``.mdx`` tree; defaults to
+    ``"."`` when nothing is found. The ``.docsync`` dir is always ignored.
+    """
+    from .adapters.mintlify import _DOCS_JSON, _MINT_JSON
+
+    docs_repo = Path(docs_repo)
+    for name in (_DOCS_JSON, _MINT_JSON):
+        hits = [p for p in docs_repo.rglob(name) if ".docsync" not in p.parts]
+        if hits:
+            shallowest = min(hits, key=lambda p: len(p.relative_to(docs_repo).parts))
+            rel = shallowest.parent.relative_to(docs_repo).as_posix()
+            return rel or "."
+
+    mdx = [p for p in docs_repo.rglob("*.mdx") if ".docsync" not in p.parts]
+    if not mdx:
+        return "."
+    common = mdx[0].parent.relative_to(docs_repo).parts
+    for page in mdx[1:]:
+        parts = page.parent.relative_to(docs_repo).parts
+        n = 0
+        while n < len(common) and n < len(parts) and common[n] == parts[n]:
+            n += 1
+        common = common[:n]
+    return "/".join(common) or "."
+
+
+def detect_adapter(docs_repo: Path, docs_root: str) -> str:
+    """Return the docs adapter name if recognizable from the tree, else ``""``.
+
+    Only Mintlify ships today; detection is informational (there is no adapter field on
+    :class:`DocsyncConfig`) — surfaced as a comment/echo so the adopter sees what was found.
+    """
+    from .adapters.mintlify import _DOCS_JSON, _MINT_JSON
+
+    root = Path(docs_repo) / docs_root
+    if (root / _DOCS_JSON).exists() or (root / _MINT_JSON).exists():
+        return "mintlify"
+    return ""
+
+
 def _manifest_template() -> str:
     """A commented starter manifest with one illustrative page entry.
 
@@ -83,21 +146,26 @@ def _manifest_template() -> str:
     )
 
 
-def init_docs_repo(docs_repo: Path, *, force: bool = False) -> list[Path]:
+def init_docs_repo(
+    docs_repo: Path,
+    *,
+    force: bool = False,
+    minimal: bool = False,
+    detect: bool = False,
+    docs_root: str | None = None,
+) -> list[Path]:
     """Scaffold a starter ``.docsync/`` skeleton in *docs_repo*.
 
-    Creates ``config.yml`` (seeded from real model defaults), a commented
-    ``manifest.yml`` template, and ``state/cursors.json`` (``{}``). Existing files
-    are left untouched unless *force* is set; only files actually written are
-    returned.
+    Default (``minimal=False``): the full template — ``config.yml`` (seeded from real
+    model defaults), a commented placeholder ``manifest.yml``, and ``state/cursors.json``.
 
-    Args:
-        docs_repo: Root of the docs repository to scaffold.
-        force: Overwrite any of the three artifacts that already exist.
+    ``minimal=True`` (zero-config onboarding): a minimal ``config.yml`` (only non-default
+    keys) with ``docs_root`` auto-detected when ``detect`` is set (or taken from an
+    explicit ``docs_root``), plus ``state/cursors.json`` — and **no** placeholder manifest
+    (a doctor-flagged placeholder would defeat the point; use ``docsync infer`` or hand-
+    author the manifest instead). Existing files are left untouched unless *force*.
 
-    Returns:
-        The paths created (or overwritten), in deterministic order. Files skipped
-        because they already exist and *force* is False are omitted.
+    Returns the paths created (or overwritten), in deterministic order.
     """
     base = docsync_dir(docs_repo)
     base.mkdir(parents=True, exist_ok=True)
@@ -106,11 +174,20 @@ def init_docs_repo(docs_repo: Path, *, force: bool = False) -> list[Path]:
     manifest_path = base / MANIFEST_FILE
     cursors_path = base / CURSORS_FILE
 
-    artifacts: list[tuple[Path, str]] = [
-        (config_path, _config_template()),
-        (manifest_path, _manifest_template()),
-        (cursors_path, "{}\n"),
-    ]
+    if minimal:
+        root = docs_root if docs_root is not None else (
+            detect_docs_root(docs_repo) if detect else "."
+        )
+        artifacts: list[tuple[Path, str]] = [
+            (config_path, _minimal_config_template(root)),
+            (cursors_path, "{}\n"),
+        ]
+    else:
+        artifacts = [
+            (config_path, _config_template()),
+            (manifest_path, _manifest_template()),
+            (cursors_path, "{}\n"),
+        ]
 
     created: list[Path] = []
     for path, content in artifacts:

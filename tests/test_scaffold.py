@@ -18,7 +18,13 @@ from docsync.config import (
     load_manifest,
 )
 from docsync.models import ModelConfig
-from docsync.scaffold import DoctorReport, doctor, init_docs_repo
+from docsync.scaffold import (
+    DoctorReport,
+    detect_adapter,
+    detect_docs_root,
+    doctor,
+    init_docs_repo,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +247,51 @@ def test_doctor_matches_repo_on_bare_name(tmp_path: Path) -> None:
 
     assert report.ok is True
     assert report.unmapped_repos == []
+
+
+# ---------------------------------------------------------------------------
+# Zero-config init: detection + minimal scaffold
+# ---------------------------------------------------------------------------
+
+
+def test_detect_docs_root_finds_docs_json_dir(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "docs.json").write_text("{}", encoding="utf-8")
+    assert detect_docs_root(tmp_path) == "docs"
+    assert detect_adapter(tmp_path, "docs") == "mintlify"
+
+
+def test_detect_docs_root_falls_back_to_mdx_common_ancestor(tmp_path: Path) -> None:
+    (tmp_path / "site" / "reference").mkdir(parents=True)
+    (tmp_path / "site" / "concepts").mkdir(parents=True)
+    (tmp_path / "site" / "reference" / "a.mdx").write_text("# a\n", encoding="utf-8")
+    (tmp_path / "site" / "concepts" / "b.mdx").write_text("# b\n", encoding="utf-8")
+    assert detect_docs_root(tmp_path) == "site"
+    assert detect_adapter(tmp_path, "site") == ""  # no docs.json -> unknown
+
+
+def test_detect_docs_root_defaults_to_dot_at_root(tmp_path: Path) -> None:
+    (tmp_path / "index.mdx").write_text("# root\n", encoding="utf-8")
+    assert detect_docs_root(tmp_path) == "."
+
+
+def test_minimal_init_detects_root_and_writes_no_manifest(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "docs.json").write_text("{}", encoding="utf-8")
+
+    created = init_docs_repo(tmp_path, minimal=True, detect=True)
+    base = docsync_dir(tmp_path)
+    assert (base / CONFIG_FILE) in created
+    assert (base / CURSORS_FILE) in created
+    assert not (base / MANIFEST_FILE).exists()  # no placeholder manifest in minimal mode
+
+    # The minimal config round-trips to the detected docs_root.
+    assert load_config(tmp_path).docs_root == "docs"
+
+
+def test_minimal_init_at_root_omits_docs_root_key(tmp_path: Path) -> None:
+    created = init_docs_repo(tmp_path, minimal=True, detect=True)
+    assert created  # config + cursors
+    cfg_text = (docsync_dir(tmp_path) / CONFIG_FILE).read_text()
+    assert "docs_root" not in cfg_text  # "." is the default -> nothing to pin
+    assert load_config(tmp_path).docs_root == "."
