@@ -1,0 +1,343 @@
+# docsync manifest — maps each doc page to the source code it documents.
+# Bootstrapped by `docsync bootstrap`; anchors drive impact mapping for the
+# update pipeline. Run `docsync doctor` to keep them honest.
+pages:
+  - path: getting-started/introduction.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/__init__.py
+          - README*
+          - src/docsync/bootstrap.py
+    judge_required: true
+  - path: getting-started/quick-start.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cli.py
+          - src/docsync/scaffold.py
+        symbols:
+          - bootstrap
+          - init_docs_repo
+    judge_required: true
+  - path: getting-started/installation.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cli.py
+          - src/docsync/config.py
+          - src/docsync/scaffold.py
+        symbols:
+          - init
+          - load_config
+          - init_docs_repo
+    judge_required: true
+  - path: getting-started/basic-workflow.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/bootstrap.py
+          - src/docsync/pipeline.py
+          - src/docsync/cli.py
+    judge_required: true
+  - path: concepts/how-docsync-works.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/bootstrap.py
+          - src/docsync/ingest.py
+          - src/docsync/pipeline.py
+          - src/docsync/models.py
+    judge_required: true
+  - path: concepts/code-ingestion.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/ingest.py
+        symbols:
+          - walk_repos
+          - extract_symbols
+          - walk_repo
+    judge_required: true
+  - path: concepts/documentation-planning.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/bootstrap.py
+          - src/docsync/models.py
+        symbols:
+          - plan_docs
+          - build_plan_prompt
+          - PlannedPage
+          - DocPlan
+    judge_required: true
+  - path: concepts/page-kinds-sections.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/models.py
+          - src/docsync/bootstrap.py
+        symbols:
+          - PageKind
+          - SECTION_ORDER
+          - PlannedPage
+    judge_required: true
+  - path: concepts/authoring-pipeline.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/edits.py
+          - src/docsync/critique.py
+          - src/docsync/pipeline.py
+        symbols:
+          - generate_page_edit
+          - critique_page_edit
+          - apply_edits
+    judge_required: true
+  - path: concepts/embedding-search.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/embeddings.py
+          - src/docsync/impact.py
+        symbols:
+          - build_index
+          - query_index
+          - find_embedding_candidates
+          - judge_candidates
+    judge_required: true
+  - path: concepts/configuration.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/config.py
+          - src/docsync/scaffold.py
+        symbols:
+          - load_config
+          - DOCSYNC_DIR
+          - CONFIG_FILE
+    judge_required: true
+  - path: architecture/system-overview.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/*.py
+          - src/docsync/adapters/*.py
+        symbols:
+          - app
+          - bootstrap
+          - plan_docs
+          - generate_page_edit
+          - validate_page
+    judge_required: true
+  - path: architecture/data-flow.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/pipeline.py
+          - src/docsync/bootstrap.py
+          - src/docsync/pr.py
+          - src/docsync/ingest.py
+        symbols:
+          - run
+          - plan_docs
+          - generate_page_edit
+          - write_patch
+          - open_pr
+    judge_required: true
+  - path: architecture/ingestion-engine.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/ingest.py
+          - src/docsync/diff.py
+        symbols:
+          - walk_repos
+          - extract_symbols
+          - extract_changed_symbols
+    judge_required: true
+  - path: architecture/planning-engine.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/bootstrap.py
+          - src/docsync/impact.py
+        symbols:
+          - plan_docs
+          - build_plan_prompt
+          - find_anchor_candidates
+          - judge_candidates
+    judge_required: true
+  - path: architecture/llm-integration.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/llm_backends.py
+          - src/docsync/edits.py
+          - src/docsync/critique.py
+        symbols:
+          - get_client
+          - ClaudeCodeClient
+          - build_edit_prompt
+          - build_critique_prompt
+    judge_required: true
+  - path: reference/cli-commands.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cli.py
+        symbols:
+          - app
+          - bootstrap
+          - map
+          - index
+          - init
+          - doctor
+          - eval
+          - run
+  - path: reference/config-schema.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/config.py
+          - src/docsync/scaffold.py
+        symbols:
+          - load_config
+          - _config_template
+          - DOCSYNC_DIR
+  - path: reference/models-data-structures.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/models.py
+        symbols:
+          - DocPlan
+          - PlannedPage
+          - PlannedSource
+          - PageKind
+          - SECTION_ORDER
+          - RepoDigest
+          - AuthoredPage
+  - path: reference/page-format.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/validate.py
+        symbols:
+          - validate_page
+          - _check_frontmatter
+          - _check_structure
+  - path: reference/doc-adapters.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/adapters/*.py
+          - src/docsync/adapters/base.py
+          - src/docsync/adapters/mintlify.py
+        symbols:
+          - DocAdapter
+  - path: reference/api-cost-tracking.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cost.py
+        symbols:
+          - pricing_for
+          - cost_of
+          - UsageMeter
+          - PRICING
+  - path: getting-started/your-first-project.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cli.py
+          - src/docsync/bootstrap.py
+          - src/docsync/config.py
+          - src/docsync/scaffold.py
+    judge_required: true
+  - path: concepts/change-detection.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/diff.py
+          - src/docsync/events.py
+          - src/docsync/diffrender.py
+    judge_required: true
+  - path: concepts/quality-assessment.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/critique.py
+          - src/docsync/eval.py
+          - src/docsync/models.py
+    judge_required: true
+  - path: concepts/multi-repo-strategies.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/bootstrap.py
+          - src/docsync/ingest.py
+          - src/docsync/config.py
+          - src/docsync/models.py
+    judge_required: true
+  - path: reference/event-schema.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/events.py
+          - src/docsync/models.py
+        symbols:
+          - EventInfo
+          - CodeDiff
+          - SourceUnit
+          - ChangedFile
+          - parse_event
+          - load_event
+  - path: reference/critique-rules.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/critique.py
+          - src/docsync/eval.py
+          - src/docsync/models.py
+        symbols:
+          - CritiqueVerdict
+          - EvalReport
+          - GoldenCase
+          - build_critique_prompt
+  - path: operations/ci-cd-integration.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cli.py
+          - src/docsync/pr.py
+          - src/docsync/events.py
+          - src/docsync/pipeline.py
+    judge_required: true
+  - path: operations/monitoring-troubleshooting.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cost.py
+          - src/docsync/cli.py
+          - src/docsync/report.py
+          - src/docsync/scaffold.py
+        symbols:
+          - doctor
+          - console_summary
+          - DoctorReport
+          - render_usage_md
+    judge_required: true
+  - path: operations/cost-optimization.mdx
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cost.py
+          - src/docsync/bootstrap.py
+        symbols:
+          - UsageMeter
+          - pricing_for
+          - render_usage_md
+          - _PLAN_MAX_TOKENS
+          - _AUTHOR_MAX_TOKENS
+    judge_required: true

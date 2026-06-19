@@ -1,0 +1,244 @@
+---
+title: Cost Tracking & Pricing
+description: Reference for docsync's token-usage metering, USD cost estimation, and the built-in Anthropic pricing model — PRICING, UsageMeter, cost_of, and pricing_for.
+---
+
+The `docsync.cost` module measures token usage across every LLM stage of a docsync run and turns it into an **estimated** USD figure. It works by wrapping any LLM client in a transparent metering proxy, accumulating per-model/per-stage usage, and collapsing the result into a serializable summary.
+
+<Note>
+All costs are derived from a **built-in price table**, so they are always flagged as estimates (`RunUsage.estimated` is always `True`) and may differ from your actual Anthropic bill.
+</Note>
+
+## How metering fits together
+
+<Steps>
+  <Step title="Wrap the client once">
+    `pipeline.run` wraps the injectable LLM client in a [`MeteredClient`](#meteredclient), so individual call sites (impact judge, edit generation, self-critique) need no changes.
+  </Step>
+  <Step title="Tag the stage">
+    Code around an LLM call enters a [`stage(...)`](#stage) context so spend can be attributed to `"judge"`, `"edit"`, or `"critique"`.
+  </Step>
+  <Step title="Record on every response">
+    Each `messages.parse(...)` call records the response's `usage` into a shared [`UsageMeter`](#usagemeter), keyed by `(model, stage)`.
+  </Step>
+  <Step title="Finalize">
+    [`UsageMeter.finalize()`](#finalize) collapses the accumulator into a cost-sorted [`RunUsage`](#runusage-fields), ready for rendering.
+  </Step>
+</Steps>
+
+## Pricing model
+
+<CardGroup cols={2}>
+  <Card title="ModelPricing" icon="tags">
+    A frozen dataclass of USD-per-million-token rates, split by token class.
+  </Card>
+  <Card title="PRICING" icon="table">
+    The built-in estimate table, keyed by model-id prefix (longest match wins).
+  </Card>
+</CardGroup>
+
+### `ModelPricing`
+
+A frozen dataclass. All values are **USD per million tokens**.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `input` | `float` | Standard input tokens. |
+| `output` | `float` | Output (generated) tokens. |
+| `cache_write` | `float` | 5-minute (ephemeral) cache-write tokens. |
+| `cache_read` | `float` | Cache-read (cache-hit) tokens. |
+
+### `PRICING`
+
+`PRICING: dict[str, ModelPricing]` maps a model-id prefix to its price table. Rates below are USD per million tokens.
+
+| Model prefix | input | output | cache_write | cache_read |
+|--------------|-------:|-------:|------------:|-----------:|
+| `claude-opus-4` | 15.0 | 75.0 | 18.75 | 1.50 |
+| `claude-sonnet-4` | 3.0 | 15.0 | 3.75 | 0.30 |
+| `claude-haiku-4` | 1.0 | 5.0 | 1.25 | 0.10 |
+
+<Warning>
+An **unknown model** falls back to opus-class pricing (`15.0 / 75.0 / 18.75 / 1.50`), so cost is never silently under-reported. Keep `PRICING` updated as Anthropic rates change.
+</Warning>
+
+## Functions
+
+### `pricing_for`
+
+```python
+def pricing_for(model: str | None) -> ModelPricing
+```
+
+Returns the `ModelPricing` for `model`, selected by the **longest matching id prefix** in `PRICING`. A `None` or empty model, or one matching no prefix, returns the opus-class fallback table.
+
+### `cost_of`
+
+```python
+def cost_of(model: str | None, usage: Any) -> float
+```
+
+Returns the estimated USD for a **single** response's `usage` under `model`'s pricing. It resolves rates via `pricing_for(model)`, reads four token counts off `usage`, multiplies each by its rate, and divides the total by `1_000_000`:
+
+```python
+(
+    input_tokens               * p.input
+  + output_tokens              * p.output
+  + cache_creation_input_tokens * p.cache_write
+  + cache_read_input_tokens     * p.cache_read
+) / 1_000_000
+```
+
+The `usage` argument may be either an SDK `usage` object (attribute access) or a `claude-code` CLI envelope's `usage` dict — both shapes are handled. Missing or `None` token counts read as `0`.
+
+### `stage`
+
+```python
+@contextmanager
+def stage(name: str | None) -> Iterator[None]
+```
+
+A context manager that attributes any LLM calls made in its block to the named pipeline stage (`"judge" | "edit" | "critique"`). It sets the `current_stage` `ContextVar` on entry and resets it on exit.
+
+```python
+from docsync.cost import stage
+
+with stage("judge"):
+    resp = client.messages.parse(model="claude-haiku-4", ...)
+```
+
+<Note>
+`current_stage` is a `ContextVar`, so its value is **per-thread**: a stage set inside a `ThreadPool` worker is the one that worker's `parse()` sees. This keeps stage attribution correct when stages run concurrently.
+</Note>
+
+## `UsageMeter`
+
+A mutable, thread-safe accumulator of per-model token usage across a run. Usage is keyed internally by `(model, stage)`, so two stages on the same model (e.g. judge vs. critique both on Haiku) stay separable.
+
+### Methods
+
+#### `record`
+
+```python
+def record(self, model: str | None, usage: Any, stage: str | None = None) -> None
+```
+
+Adds one response's usage to the accumulator.
+
+- **No-op** when `usage is None` (e.g. fake clients in tests).
+- A `None` model is stored under the literal key `"(unknown)"`.
+- Increments the `(model, stage)` entry's `calls`, the four token counters, and `cost_usd` (via `cost_of`).
+- **Thread-safe**: the per-key read-modify-write is guarded by an internal lock, so `record()` may be called concurrently from parallel judge/edit loops.
+
+#### `finalize`
+
+```python
+def finalize(self) -> RunUsage
+```
+
+Collapses the accumulator into a serializable [`RunUsage`](#runusage-fields):
+
+- `by_model` is sorted by `cost_usd`, **descending**.
+- Run-level `calls`, token counters, and `cost_usd` are summed across all per-model entries.
+- `estimated` is set to `True`.
+- `cache_hit_rate` is computed as `cache_read_input_tokens / prompt_tokens` (or `0.0` when there are no prompt tokens).
+
+## Result models
+
+### `ModelUsage` fields
+
+Per `(model, stage)` usage, as accumulated by `UsageMeter`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | `str` | Model id (or `"(unknown)"`). |
+| `stage` | `str \| None` | Pipeline stage, or `None` if unset. |
+| `calls` | `int` | Number of recorded responses. |
+| `input_tokens` | `int` | Summed input tokens. |
+| `output_tokens` | `int` | Summed output tokens. |
+| `cache_creation_input_tokens` | `int` | Summed cache-write tokens. |
+| `cache_read_input_tokens` | `int` | Summed cache-read tokens. |
+| `cost_usd` | `float` | Estimated USD for this model/stage. |
+
+### `RunUsage` fields
+
+The run-level summary returned by `finalize()`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `by_model` | `list[ModelUsage]` | Per-model breakdown, sorted by `cost_usd` descending. |
+| `estimated` | `bool` | Always `True` — costs come from the built-in table. |
+| `calls` | `int` | Total LLM calls across the run. |
+| `input_tokens` | `int` | Total input tokens. |
+| `output_tokens` | `int` | Total output tokens. |
+| `cache_creation_input_tokens` | `int` | Total cache-write tokens. |
+| `cache_read_input_tokens` | `int` | Total cache-read tokens. |
+| `cost_usd` | `float` | Total estimated USD. |
+| `cache_hit_rate` | `float` | `cache_read_input_tokens / prompt_tokens` (`0.0` when no prompt tokens). |
+| `prompt_tokens` | `int` (derived) | Prompt-side token total used by `cache_hit_rate` and rendering. |
+
+## Metering proxy
+
+### `MeteredClient`
+
+A drop-in proxy around any client exposing `.messages.parse`. It substitutes anywhere the real `anthropic.Anthropic()` (or `ClaudeCodeClient`) is used.
+
+```python
+def __init__(self, inner: Any, meter: UsageMeter) -> None
+```
+
+- Replaces `inner.messages` with a `_MeteredMessages` wrapper.
+- `__getattr__` passes through every other attribute to `inner`, so non-`messages` access is transparent.
+
+`_MeteredMessages.parse(*args, **kwargs)` calls the inner `parse`, then records `getattr(resp, "usage", None)` under `kwargs.get("model")` and the current `stage(...)` value, and returns the response untouched (`.parsed_output` is left intact).
+
+<Tabs>
+  <Tab title="Usage">
+    ```python
+    from docsync.cost import MeteredClient, UsageMeter, stage
+
+    meter = UsageMeter()
+    client = MeteredClient(anthropic.Anthropic(), meter)
+
+    with stage("judge"):
+        resp = client.messages.parse(model="claude-haiku-4", ...)
+
+    run_usage = meter.finalize()
+    print(f"~${run_usage.cost_usd:.4f} across {run_usage.calls} call(s)")
+    ```
+  </Tab>
+  <Tab title="What gets recorded">
+    Each `parse` call records:
+
+    - **model** — from the `model=` keyword argument.
+    - **usage** — the response's `usage` (SDK object or CLI dict); `None` is a no-op.
+    - **stage** — the current `current_stage` value, via `stage(...)`.
+  </Tab>
+</Tabs>
+
+## Rendering
+
+### `render_usage_md`
+
+```python
+def render_usage_md(usage: RunUsage | None) -> list[str]
+```
+
+Returns Markdown lines summarizing run cost — an **empty list** when `usage is None` or `usage.calls == 0`. Output includes:
+
+- A `### Cost (estimated)` heading.
+- A summary line: total `~$cost`, call count, prompt-`in` / output-`out` tokens, and prompt-cache hit percentage.
+- One bullet per model in `by_model`, with an optional `(stage)` suffix and per-model call count and cost.
+- A trailing disclaimer that figures are estimates from a built-in price table.
+
+### `render_usage_console`
+
+```python
+def render_usage_console(usage: RunUsage | None) -> str
+```
+
+Produces a one-line cost summary for the terminal.
+
+<Note>
+The source for `render_usage_console` is truncated in the reference material; only its signature and one-line-summary purpose are documented here.
+</Note>

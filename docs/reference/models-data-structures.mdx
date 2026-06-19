@@ -1,0 +1,268 @@
+---
+title: Data Models & Structures
+description: API reference for the docsync pipeline's shared data contracts — DocPlan, PlannedPage, PlannedSource, PageKind, RepoDigest, and the supporting models defined in docsync/models.py.
+---
+
+The `docsync.models` module is the single shared seam every pipeline stage builds against. Each stage (diff → impact → edits → validate → PR) exchanges the [pydantic v2](https://docs.pydantic.dev/) models defined here. The module is intentionally dependency-light (pydantic + stdlib only).
+
+<Note>
+Pydantic **v2** is used here — unrelated to Keep's pydantic v1 services — because the Anthropic SDK's `messages.parse()` structured-output helper validates against pydantic models directly.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Diff extraction" icon="code-compare">
+    `FileStatus`, `ChangedFile`, `CodeDiff` — the structured result of comparing `base..head`.
+  </Card>
+  <Card title="Bootstrap / ingest" icon="box-archive">
+    `SourceUnit`, `RepoDigest` — the lightweight whole-repo snapshot the planner reads.
+  </Card>
+  <Card title="Planning" icon="sitemap">
+    `PageKind`, `PlannedSource`, `PlannedPage`, `DocPlan`, `SECTION_ORDER` — the planner's structured output.
+  </Card>
+  <Card title="Authoring & config" icon="file-pen">
+    `AuthoredPage`, `ManifestSource`, `ManifestPage` — authored output and the page↔source manifest.
+  </Card>
+</CardGroup>
+
+## Type aliases & constants
+
+### `PageKind`
+
+```python
+PageKind = Literal["concept", "guide", "reference"]
+```
+
+Page kinds steer both the author prompt and how the page is kept live.
+
+| Value | Meaning | Anchoring & maintenance |
+| --- | --- | --- |
+| `reference` | Code-anchored API / data-model pages | Precise anchors, judge-autopass |
+| `concept` | Narrative explanations of a subsystem / architecture | Broad anchors, routed through the judge |
+| `guide` | Task-oriented (getting-started / how-to) | Loosely anchored, routed through the judge |
+
+### `SECTION_ORDER`
+
+```python
+SECTION_ORDER: tuple[str, ...] = (
+    "Getting Started",
+    "Concepts",
+    "Architecture",
+    "Reference",
+    "Operations",
+)
+```
+
+The canonical section order for a generated site's reading flow. Sections listed here are emitted in this order; unknown sections sort **after** these, stable by first appearance. Consumed by [`DocPlan.ordered_sections`](#ordered_sections) to emit nav groups in sequence.
+
+---
+
+## Diff extraction models
+
+### `FileStatus`
+
+A string enum describing how a file was touched by a diff.
+
+| Member | Value |
+| --- | --- |
+| `FileStatus.ADDED` | `"added"` |
+| `FileStatus.MODIFIED` | `"modified"` |
+| `FileStatus.REMOVED` | `"removed"` |
+| `FileStatus.RENAMED` | `"renamed"` |
+
+### `ChangedFile`
+
+One file touched by a diff, with its hunks and the code symbols affected.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `path` | `str` | — | The file path. |
+| `status` | `FileStatus` | — | How the file was changed. |
+| `previous_path` | `Optional[str]` | `None` | Set when `status == FileStatus.RENAMED`. |
+| `hunks` | `list[str]` | `[]` | Unified-diff hunk texts (the `@@ ... @@` blocks + context), one per hunk. |
+| `changed_symbols` | `list[str]` | `[]` | Function / class / module-level assignment names whose body the hunks touch. The cross-boundary signal used by impact mapping; survives line-number churn. |
+
+### `CodeDiff`
+
+The structured result of comparing `base..head` in a single service repo.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `repo` | `str` | — | e.g. `"keephq/keep-api-gateway"` (`owner/name`) or a local path. |
+| `base_sha` | `str` | — | Base commit SHA. |
+| `head_sha` | `str` | — | Head commit SHA. |
+| `pr_number` | `Optional[int]` | `None` | Originating PR number, if any. |
+| `pr_title` | `Optional[str]` | `None` | Originating PR title, if any. |
+| `files` | `list[ChangedFile]` | `[]` | The changed files. |
+
+**Methods**
+
+<ParamField path="changed_paths() -> list[str]">
+  Returns every path touched by the diff. Each file's `path` is included, and its `previous_path` is appended when set (renames contribute both names).
+</ParamField>
+
+<ParamField path="all_symbols() -> list[str]">
+  Returns the de-duplicated union of `changed_symbols` across all files, preserving first-appearance order.
+</ParamField>
+
+---
+
+## Bootstrap / ingest models
+
+### `SourceUnit`
+
+One documentable source file, distilled to what the planner needs. Lightweight by design: paths + symbol names only (no file bodies). A whole service repo's worth of these has to fit in the planner's context; excerpts are fetched per-page only at author time.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `path` | `str` | — | Repo-relative path, e.g. `"src/routes/alerts.py"`. |
+| `kind` | `str` | — | Coarse language/role tag: `"python"` \| `"typescript"` \| `"other"`. |
+| `symbols` | `list[str]` | `[]` | Top-level defs / classes / exports. |
+
+### `RepoDigest`
+
+The lightweight, whole-repo snapshot bootstrap plans from.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `repo` | `str` | — | `owner/name` or local path (mirrors `CodeDiff.repo`). |
+| `root` | `str` | — | Absolute path the units were walked from. |
+| `units` | `list[SourceUnit]` | `[]` | The documentable source files. |
+
+**Methods**
+
+<ParamField path="all_symbols() -> list[str]">
+  Returns the de-duplicated union of every unit's `symbols`, preserving first-appearance order.
+</ParamField>
+
+---
+
+## Planning models
+
+### `PlannedSource`
+
+A code anchor for a planned page — repo-qualified, for multi-repo sites.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `repo` | `str` | — | Which source repo (matches a `RepoDigest.repo` / `CodeDiff.repo`). |
+| `globs` | `list[str]` | `[]` | `fnmatch` globs over changed paths. |
+| `symbols` | `list[str]` | `[]` | Symbol names (a trailing `*` means prefix match). |
+
+### `PlannedPage`
+
+One doc page the planner proposes to author (structured LLM output).
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `page_path` | `str` | — | New `.mdx` path relative to `docs_root`, e.g. `"reference/alerts.mdx"`. |
+| `title` | `str` | — | Page title. |
+| `kind` | `PageKind` | `"reference"` | Page kind — see [`PageKind`](#pagekind). |
+| `section` | `str` | `"Reference"` | Nav group / section heading. |
+| `order` | `int` | `0` | Position within the section (ascending). |
+| `summary` | `str` | `""` | What the page should cover (steers the author stage). |
+| `sources` | `list[PlannedSource]` | `[]` | Multi-repo code anchors. |
+
+**Properties**
+
+<ParamField path="judge_required -> bool">
+  `True` when `kind` is `"concept"` or `"guide"`. Narrative pages route through the judge (rather than anchor-autopass) when their source changes.
+
+  A concept/guide page anchors to a whole subsystem, so an autopass would fire a costly Opus edit on every change there; routing through the judge means an edit only happens when the change actually invalidates the page.
+</ParamField>
+
+### `DocPlan`
+
+The planner's structured response: a flat, section-tagged set of pages.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `pages` | `list[PlannedPage]` | `[]` | All proposed pages, flat (not nested by section). |
+
+<Note>
+The plan is kept **flat** (not nested sections) because flat structured output is far more reliable through the CLI backend; ordered sections are derived in code via `ordered_sections`.
+</Note>
+
+#### `ordered_sections`
+
+```python
+def ordered_sections(self) -> list[tuple[str, list[PlannedPage]]]
+```
+
+Groups pages into sections, ordered by the canonical reading flow:
+
+<Steps>
+  <Step title="Bucket by section">
+    Pages are grouped by their `section`, recording each section's first appearance.
+  </Step>
+  <Step title="Order sections">
+    Sections present in [`SECTION_ORDER`](#section_order) come first in that order; any others follow in first-appearance order.
+  </Step>
+  <Step title="Order pages within a section">
+    Pages are sorted by `(order, title)` — ascending `order`, then title as a tie-breaker.
+  </Step>
+</Steps>
+
+Returns a list of `(section_name, pages)` tuples.
+
+```python
+plan = DocPlan(pages=[
+    PlannedPage(page_path="reference/alerts.mdx", title="Alerts",
+                kind="reference", section="Reference", order=1),
+    PlannedPage(page_path="getting-started/install.mdx", title="Install",
+                kind="guide", section="Getting Started", order=0),
+])
+
+for section, pages in plan.ordered_sections():
+    print(section, [p.title for p in pages])
+# Getting Started ['Install']
+# Reference ['Alerts']
+```
+
+---
+
+## Authoring & config models
+
+### `AuthoredPage`
+
+The author stage's structured response: one full MDX page body.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `content` | `str` | The complete `.mdx` file text (frontmatter + body). |
+
+### Manifest models
+
+The config layer (`config.py`) records the page ↔ source mapping. These mirror the planning anchors but describe a committed manifest rather than a proposal.
+
+#### `ManifestSource`
+
+One source-of-truth location a doc page is anchored to.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `repo` | `str` | — | Matches `CodeDiff.repo`. |
+| `globs` | `list[str]` | `[]` | `fnmatch` globs over changed paths. |
+| `symbols` | `list[str]` | `[]` | Symbol names (supports a trailing `*`). |
+
+#### `ManifestPage`
+
+A documentation page and the code it is anchored to.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `path` | `str` | Path to the `.mdx`, relative to the docs repo root. |
+| `sources` | `list[ManifestSource]` | The source-of-truth locations the page is anchored to. |
+
+<Warning>
+`PlannedSource` / `PlannedPage` are the planner's *proposed* anchors (structured LLM output), while `ManifestSource` / `ManifestPage` are the *committed* anchors persisted in config. They share the same `repo` / `globs` / `symbols` anchor shape but are distinct types — don't mix them across the planning and config boundaries.
+</Warning>
+
+## Field reference: anchor shape
+
+`PlannedSource`, `ManifestSource`, `ChangedFile`, and the digest models all key off the same repo identifier and symbol/glob matching conventions:
+
+| Concept | Where it appears | Notes |
+| --- | --- | --- |
+| `repo` identifier | `CodeDiff`, `RepoDigest`, `PlannedSource`, `ManifestSource` | `owner/name` or a local path; the join key across diff, digest, and anchors. |
+| `globs` | `PlannedSource`, `ManifestSource` | `fnmatch` patterns evaluated over changed paths. |
+| `symbols` | `PlannedSource`, `ManifestSource`, `ChangedFile`, `SourceUnit` | Symbol names; a trailing `*` denotes a prefix match in the anchor models. |

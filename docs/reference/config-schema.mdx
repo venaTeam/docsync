@@ -1,0 +1,159 @@
+---
+title: Configuration Schema
+description: Complete reference for the .docsync/config.yml file — every option, its default, and how docsync loads it.
+---
+
+docsync reads its settings from a single YAML file inside the docs repository's `.docsync/` directory. This page documents the file's location, every supported option (with defaults sourced from the real model), and the loader that turns the file into a validated `DocsyncConfig`.
+
+<Note>
+Configuration is **optional**. If `.docsync/config.yml` is absent, [`load_config`](#load-config) returns an all-defaults `DocsyncConfig`. The file only needs to exist when you want to override a default.
+</Note>
+
+## File location
+
+All docsync state lives under a fixed directory in the docs repository. These names are defined as constants in `docsync/config.py`:
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `DOCSYNC_DIR` | `.docsync` | Root directory for all docsync files, relative to the docs repo. |
+| `CONFIG_FILE` | `config.yml` | The configuration file documented on this page. |
+| `MANIFEST_FILE` | `manifest.yml` | Page ↔ source-code mapping (loaded separately). |
+| `CURSORS_FILE` | `state/cursors.json` | Last processed `head_sha` per source repo (idempotency state). |
+
+The resulting layout in a docs repo:
+
+```
+.docsync/
+  config.yml          # DocsyncConfig (this page)
+  manifest.yml        # page <-> source mapping
+  state/cursors.json  # last processed head_sha per source repo
+```
+
+The directory path is resolved by the `docsync_dir` helper:
+
+```python
+def docsync_dir(docs_repo: Path) -> Path:
+    return Path(docs_repo) / DOCSYNC_DIR
+```
+
+## Configuration options
+
+The fields below mirror the starter file emitted by `_config_template()` in `scaffold.py`, which is seeded from the real `DocsyncConfig` model defaults — the template never hardcodes values that the model owns.
+
+### Top-level keys
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `models` | mapping | see [below](#the-models-block) | LLM model + effort selection for the judge and edit stages. |
+| `docs_root` | string | `"."` | Root of the docs tree, relative to the repo, where page paths resolve. |
+| `reviewers` | list of strings | `[]` | GitHub handles requested as reviewers on opened doc-update PRs. |
+| `pr_labels` | list of strings | `[docsync]` | Labels applied to opened docs PRs (auto-created in the repo if missing). |
+| `min_edit_confidence` | float (0–1) | `0.0` | Skip the edit stage for pages below this impact confidence. `0` disables the gate. |
+| `max_parallel_requests` | integer | `4` | Max concurrent LLM requests across the judge + edit stages. |
+| `max_pages_per_run` | integer | `0` | Cap on pages edited per run. `0` means unlimited; highest-confidence pages first. |
+
+### The `models` block
+
+The `models` mapping configures which LLM is used per stage and how much reasoning effort the edit stage spends.
+
+| Key | Description |
+|-----|-------------|
+| `edit_model` | Model used for the documentation edit stage. |
+| `judge_model` | Model used for the judge stage. |
+| `edit_effort` | Reasoning effort applied during the edit stage. |
+
+<Note>
+Default model ids and effort come from the `ModelConfig` defaults inside `DocsyncConfig().models`. To see the exact values your installed version ships, scaffold a fresh config (below) — the generated file is seeded from those live defaults rather than hardcoded strings.
+</Note>
+
+## Example file
+
+A complete `config.yml` matching the scaffolded template:
+
+```yaml
+# docsync config — see DocsyncConfig in models.py for all options.
+models:
+  edit_model: <edit_model default>
+  judge_model: <judge_model default>
+  edit_effort: <edit_effort default>
+# Root of the docs tree, relative to this repo (where page paths resolve).
+docs_root: "."
+# GitHub handles requested as reviewers on opened doc-update PRs.
+reviewers: []
+# Labels applied to opened docs PRs (auto-created in this repo if missing).
+pr_labels: [docsync]
+# Ship-safety: skip the edit stage for pages below this impact confidence
+# (0-1). 0 = off. Raise (e.g. 0.7) for a conservative first rollout.
+min_edit_confidence: 0.0
+# Max concurrent LLM requests across the judge + edit stages.
+max_parallel_requests: 4
+# Cap on pages edited per run (0 = unlimited); highest-confidence first.
+max_pages_per_run: 0
+```
+
+<Warning>
+The `<...>` model placeholders above are illustrative. The real template substitutes concrete defaults from `DocsyncConfig().models` at scaffold time. Treat the generated file — not this snippet — as the source of truth for model ids.
+</Warning>
+
+## Generating a starter config
+
+Use the scaffolder to write a valid `config.yml` (alongside a manifest template and an empty cursors file) instead of hand-authoring it:
+
+<Steps>
+<Step title="Run init">
+`init_docs_repo(docs_repo)` creates `.docsync/config.yml`, `.docsync/manifest.yml`, and `.docsync/state/cursors.json`.
+</Step>
+<Step title="Existing files are preserved">
+Files that already exist are left untouched unless `force=True` is passed. Only the paths actually written are returned, in deterministic order.
+</Step>
+<Step title="Edit to taste">
+The generated `config.yml` is already valid; adjust `reviewers`, `pr_labels`, the safety gates, and the `models` block as needed.
+</Step>
+</Steps>
+
+The config template function:
+
+```python
+def _config_template() -> str:
+    """A minimal valid ``config.yml``, seeded from the real model defaults."""
+    models = DocsyncConfig().models  # ModelConfig defaults — never hardcode ids
+    ...
+```
+
+## Loading the config
+
+`load_config` is the single entry point that reads and validates the file.
+
+```python
+def load_config(docs_repo: Path) -> DocsyncConfig:
+    """Load .docsync/config.yml; return defaults if it's absent."""
+    path = docsync_dir(docs_repo) / CONFIG_FILE
+    if not path.exists():
+        return DocsyncConfig()
+    data = _yaml.load(path.read_text()) or {}
+    return DocsyncConfig.model_validate(data)
+```
+
+| Aspect | Behavior |
+|--------|----------|
+| **Parameter** | `docs_repo: Path` — the root of the docs repository. |
+| **Returns** | A validated `DocsyncConfig`. |
+| **Missing file** | Returns `DocsyncConfig()` (all defaults) — never raises. |
+| **Empty file** | A file that parses to nothing is treated as `{}`, so all defaults apply. |
+| **Validation** | Parsed data is passed through `DocsyncConfig.model_validate`, so unknown or malformed values are rejected by the model. |
+| **YAML mode** | Parsed with a safe `ruamel.yaml` loader (`YAML(typ="safe")`), which strips comments. |
+
+<Note>
+Unlike `load_config`, the manifest loader (`load_manifest`) raises `FileNotFoundError` when its file is missing — a docsync-enabled repo must have a manifest, but a config file is genuinely optional.
+</Note>
+
+## Related files
+
+<CardGroup cols={2}>
+<Card title="manifest.yml">
+Maps each doc page to the source code it documents (`repo`, `globs`, `symbols`, per-page guardrails). Required for the update pipeline.
+</Card>
+<Card title="state/cursors.json">
+The only mutable persisted state: a `repo → head_sha` map used for idempotency, committed by the Action via `advance_cursor` / `save_cursors`.
+</Card>
+</CardGroup>

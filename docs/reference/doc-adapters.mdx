@@ -1,0 +1,230 @@
+---
+title: Documentation Adapters
+description: The DocAdapter plugin interface and the Mintlify adapter that powers docsync's frontmatter parsing, structural integrity gates, and broken-link checks across documentation frameworks.
+---
+
+A **documentation adapter** encapsulates everything format-specific about a docs framework: how to read a page's frontmatter, which structural invariants an edit must preserve, and how to run the framework's own link/build checks. Adapters are the seam through which `docsync` supports multiple documentation frameworks (Mintlify today; Docusaurus, GitBook, MkDocs, and custom formats later).
+
+<Note>
+The MVP ships exactly one adapter — `MintlifyAdapter`. `DocAdapter` is the abstract base that a Docusaurus or GitBook adapter would subclass.
+</Note>
+
+## Architecture
+
+<CardGroup cols={2}>
+  <Card title="DocAdapter" icon="plug">
+    Abstract base class (`docsync/adapters/base.py`). Defines the contract every framework adapter must satisfy, with safe no-op defaults for optional capabilities.
+  </Card>
+  <Card title="MintlifyAdapter" icon="markdown">
+    Concrete adapter (`docsync/adapters/mintlify.py`) for Mintlify-flavoured MDX. `name = "mintlify"`.
+  </Card>
+</CardGroup>
+
+## `DocAdapter`
+
+Abstract base class (`abc.ABC`). Subclasses must implement the abstract methods; the remaining methods provide framework-neutral defaults that a subclass overrides only when the framework supports the capability.
+
+### Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Stable identifier for the adapter (e.g. `"mintlify"`). |
+
+### Method reference
+
+| Method | Kind | Returns | Purpose |
+|--------|------|---------|---------|
+| `owns(page_path)` | abstract | `bool` | True if this adapter handles the page (by extension/location). |
+| `split_frontmatter(text)` | abstract | `tuple[dict, str]` | `(frontmatter_dict, body)`. Empty dict if no frontmatter. |
+| `frontmatter_keys_to_freeze()` | abstract | `list[str]` | Frontmatter keys an edit must never change. |
+| `structural_signature(text)` | abstract | `dict` | Structural fingerprint compared before vs. after an edit. |
+| `structural_problems(text)` | default | `list[str]` | Well-formedness problems (empty == well-formed). Default: `[]`. |
+| `check_links(docs_root)` | abstract | `list[str]` | Run the framework's broken-link check (empty == clean). |
+| `nav_routes(docs_root)` | default | `list[str]` | Existing nav routes for collision checks. Default: `[]`. |
+| `register_pages_in_nav(docs_root, page_paths, *, group)` | default | `list[str]` | Add pages to the nav. Default: `[]` (no-op). |
+| `set_nav_sections(docs_root, ordered_sections)` | default | `list[str]` | Register nav sections in reading-flow order. Default: `[]`. |
+| `ensure_valid_docs_json(docs_root)` | default | `bool` | Ensure the nav/config file exists with required fields. Default: `False`. |
+
+### Abstract methods
+
+<Steps>
+  <Step title="owns(page_path: str) -> bool">
+    Returns `True` if this adapter handles the given page, decided by extension or location.
+  </Step>
+  <Step title="split_frontmatter(text: str) -> tuple[dict, str]">
+    Returns `(frontmatter_dict, body)`. Returns an empty dict if the page has no frontmatter.
+  </Step>
+  <Step title="frontmatter_keys_to_freeze() -> list[str]">
+    Returns the frontmatter keys an edit must never change (for example `title`, `description`).
+  </Step>
+  <Step title="structural_signature(text: str) -> dict">
+    Returns a structural fingerprint (component tag counts, fence balance, …). `validate.py` compares the signature before vs. after an edit; any change in counts or nesting fails the component-integrity gate.
+  </Step>
+  <Step title="check_links(docs_root: Path) -> list[str]">
+    Runs the framework's broken-link check over a patched tree and returns human-readable problems (empty == clean). Implementations should degrade gracefully (return `[]`) when the framework CLI is unavailable, and the caller surfaces that as a warning.
+  </Step>
+</Steps>
+
+### Default (overridable) methods
+
+These methods ship with safe defaults so a minimal adapter only needs the abstract methods. A framework without the corresponding concept inherits a harmless no-op.
+
+| Method | Default behavior | When to override |
+|--------|------------------|------------------|
+| `structural_problems(text)` | Returns `[]` (no checks). | When the framework has nesting/balance rules counts can't catch. |
+| `nav_routes(docs_root)` | Returns `[]` (no nav file → nothing to collide with). | When the framework has a navigation manifest. |
+| `register_pages_in_nav(...)` | Returns `[]` (no-op). | When pages must be added to a nav manifest. |
+| `set_nav_sections(...)` | Returns `[]` (no-op). | When multiple nav sections need ordering. |
+| `ensure_valid_docs_json(docs_root)` | Returns `False` (no-op). | When the framework has a config file required for rendering. |
+
+<Note>
+`register_pages_in_nav` and `set_nav_sections` are **idempotent**: re-registering an existing page is a no-op, and `set_nav_sections` applies a set-union per section. Both return the list of nav files actually modified (empty == nothing changed).
+</Note>
+
+#### `structural_problems` vs. `structural_signature`
+
+These two methods are complementary integrity checks:
+
+- **`structural_signature`** is a fingerprint of *counts and shapes*. The validator compares signatures before and after an edit; any drift fails the gate.
+- **`structural_problems`** checks the *new* text is actually well-formed. Counts can stay equal while nesting breaks (a reordered or swapped tag pair), so this catches what the signature misses.
+
+## `MintlifyAdapter`
+
+Adapter for Mintlify-flavoured MDX docs. Mintlify pages are `.mdx` (also `.md`) files with YAML frontmatter and inline MDX components (`<Card>`, `<CardGroup>`, `<Steps>`, …).
+
+```python
+from docsync.adapters.mintlify import MintlifyAdapter
+
+adapter = MintlifyAdapter()
+adapter.name  # "mintlify"
+```
+
+### Ownership
+
+<Tabs>
+  <Tab title="owns">
+    ```python
+    def owns(self, page_path: str) -> bool
+    ```
+    Returns `True` for `.mdx` and `.md` files (case-insensitive). The check lowercases the path and tests both suffixes.
+  </Tab>
+  <Tab title="frontmatter">
+    ```python
+    def split_frontmatter(self, text: str) -> tuple[dict, str]
+    def frontmatter_keys_to_freeze(self) -> list[str]
+    ```
+    `split_frontmatter` uses the `frontmatter` library and returns `(dict(post.metadata), post.content)`. On **any** parse error it degrades gracefully — returning `({}, text)` — so a malformed edit surfaces elsewhere rather than crashing the splitter.
+
+    `frontmatter_keys_to_freeze` returns `["title", "description"]`.
+  </Tab>
+</Tabs>
+
+### Structural signature
+
+`structural_signature(text)` returns a flat `{str: int}` fingerprint designed so two signatures compare with a plain `==`.
+
+| Signature key | Meaning |
+|---------------|---------|
+| `"Card"`, `"Steps"`, … | Count of each **known** component opening tag. |
+| `"/Card"`, `"/Steps"`, … | Count of each **known** component closing tag. |
+| `fence_count` | Number of <code>```</code> code-fence markers (must stay even). |
+| `mermaid_count` | Number of <code>```mermaid</code> fences. |
+
+Only tags in the known-component set are counted, which keeps the signature stable against stray capitalised prose words.
+
+#### Recognized components
+
+The adapter restricts counting to this fixed set (`_KNOWN_COMPONENTS`):
+
+| | | | |
+|---|---|---|---|
+| `CardGroup` | `Card` | `Warning` | `Note` |
+| `Tip` | `Info` | `Steps` | `Step` |
+| `Accordion` | `AccordionGroup` | `Tabs` | `Tab` |
+| `CodeGroup` | `Frame` | | |
+
+### Well-formedness (nesting / balance)
+
+`structural_problems(text)` runs a stack-based check over known component tags and returns a list of human-readable problems (empty == well-formed). It catches failure modes the count signature misses:
+
+- a dropped closing tag,
+- a stray closing tag, and
+- a swapped or reordered pair (whose counts still match).
+
+How it behaves:
+
+1. Tags inside fenced code blocks and inline code spans are stripped before scanning — they're examples, not real structure.
+2. Only known components are tracked, so arbitrary `<Thing>` prose cannot produce false positives.
+3. Self-closing tags such as `<Card/>` are balanced by definition and skipped.
+
+Problem messages it emits:
+
+| Condition | Message |
+|-----------|---------|
+| Closing tag interleaves with a different open tag | `mismatched nesting: </X> closes <Y>` |
+| Closing tag with nothing open | `stray closing </X> with no matching open tag` |
+| Open tag never closed | `unclosed <X> (no matching close tag)` |
+
+### Link check (soft gate)
+
+`check_links(docs_root)` runs Mintlify's broken-link checker over the patched tree and returns human-readable problem lines (empty == clean or unavailable).
+
+<Warning>
+`check_links` must **never** raise. A missing CLI, a timeout, or a non-zero exit are all treated as "no findings" so validation can downgrade the result to a warning rather than failing the pipeline.
+</Warning>
+
+It attempts two command variants in order, so it works with both a project-local and a globally installed CLI:
+
+```text
+1. npx --no-install mintlify broken-links   # project-local CLI
+2. mintlify broken-links                     # globally installed CLI
+```
+
+Tuning constants govern how output is interpreted:
+
+| Constant | Value / pattern | Role |
+|----------|-----------------|------|
+| `_LINK_CHECK_TIMEOUT_S` | `30` | Subprocess timeout; never let the pipeline hang. |
+| `_LINK_PROBLEM_RE` | `broken\|not found\|404\|missing\|unreachable` (case-insensitive) | Lines that indicate a real broken-link finding. |
+| `_CLI_UNAVAILABLE_RE` | `npm error\|npx canceled\|command not found\|…` (case-insensitive) | Lines meaning the CLI never ran — must **not** be mistaken for findings. |
+
+### Navigation targets
+
+Mintlify v4 reads `docs.json` and ignores the legacy `mint.json`, so `docs.json` is the canonical nav target. The adapter mirrors writes into `mint.json` when it exists (its shape differs) so the two files don't silently diverge in a repo that still ships both.
+
+| Constant | Value | Notes |
+|----------|-------|-------|
+| `_DOCS_JSON` | `"docs.json"` | Canonical Mintlify v4 nav/config file. |
+| `_MINT_JSON` | `"mint.json"` | Legacy file, mirrored only when present. |
+
+## Implementing a new adapter
+
+To support another framework (Docusaurus, MkDocs, GitBook, or a custom format), subclass `DocAdapter` and implement the abstract methods. Override the default nav/config methods only if the framework has those concepts.
+
+```python
+from pathlib import Path
+from docsync.adapters.base import DocAdapter
+
+
+class MkDocsAdapter(DocAdapter):
+    name = "mkdocs"
+
+    def owns(self, page_path: str) -> bool:
+        return page_path.lower().endswith(".md")
+
+    def split_frontmatter(self, text: str) -> tuple[dict, str]:
+        ...
+
+    def frontmatter_keys_to_freeze(self) -> list[str]:
+        return ["title"]
+
+    def structural_signature(self, text: str) -> dict:
+        ...
+
+    def check_links(self, docs_root: Path) -> list[str]:
+        return []  # degrade gracefully when no checker is available
+```
+
+<Note>
+Keep `check_links` (and any framework CLI integration) defensive: return `[]` when the tooling is unavailable instead of raising, matching the contract documented on the base class.
+</Note>

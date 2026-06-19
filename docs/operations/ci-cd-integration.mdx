@@ -1,0 +1,217 @@
+---
+title: CI/CD Pipeline Integration
+description: Wire docsync into GitHub Actions, GitLab CI, or any CI/CD system so that code changes automatically generate documentation edits and open docs PRs — triggered by commits, not by hand.
+---
+
+docsync runs as a single CLI (`docsync`) that maps a code diff to impacted documentation pages, generates surgical edits, validates them, and either reports a patch or opens a docs PR. In CI the diff parameters are recovered from the triggering event automatically, so a pipeline step usually needs no diff flags at all.
+
+<CardGroup cols={2}>
+  <Card title="Event-native in CI" icon="bolt">
+    `docsync run` auto-detects `$GITHUB_EVENT_PATH` and derives the repo, base, head, and PR from the event — the core "triggered by commits, not many parameters" goal.
+  </Card>
+  <Card title="Dry-run first, PR later" icon="shield-check">
+    Runs are dry by default: compute and report only. Add `--open-pr` once you trust the output to branch, commit, push, and open a docs PR via `gh`.
+  </Card>
+</CardGroup>
+
+## How docsync fits a pipeline
+
+A CI run is one invocation of `docsync run` against a **checkout of your docs repo**, triggered by a change in a **service repo**. The pipeline only has to:
+
+1. Check out the docs repo (it must be a real git checkout for PR/patch output).
+2. Make the service repo's diff available — in GitHub Actions this is just the event JSON; elsewhere you pass refs explicitly.
+3. Provide credentials: an LLM backend key, and (for `--open-pr`) a `gh`-authenticated token.
+
+<Note>
+docsync is dogfooded as the `docsync` CLI and wrapped by an `action.yml`. The examples below call the CLI directly so the behavior is identical across GitHub Actions, GitLab CI, and any other runner.
+</Note>
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install docsync">
+    Install the `docsync` package on the runner so the `docsync` command is on `PATH`. To use the embeddings recall-net, install the optional embeddings extra — otherwise `--use-embeddings` degrades gracefully to anchors-only.
+  </Step>
+  <Step title="Choose an LLM backend">
+    `docsync run --backend` selects how edits are generated:
+
+    | Backend | Use it for | Requires |
+    | --- | --- | --- |
+    | `api` (default) | CI | `ANTHROPIC_API_KEY` |
+    | `claude-code` | Local dev | Local Claude Code CLI auth (no API key) |
+
+    In CI, use the default `api` backend and supply `ANTHROPIC_API_KEY` as a secret.
+  </Step>
+  <Step title="Provide a `.docsync` manifest">
+    The docs repo must contain `.docsync/manifest.yml` mapping code anchors to doc pages. The pre-flight gate (below) checks it before any LLM spend.
+  </Step>
+  <Step title="Authenticate `gh` (only for `--open-pr`)">
+    PR creation shells out to the GitHub CLI (`gh`). Make sure `gh` is installed and authenticated (e.g. via `GH_TOKEN`/`GITHUB_TOKEN`) on the runner. Without it, docsync falls back to returning the branch name instead of a PR URL.
+  </Step>
+</Steps>
+
+## How the diff source is resolved
+
+`docsync run` picks its diff source in a fixed priority order. Understanding it tells you exactly which flags a given CI system needs:
+
+<Steps>
+  <Step title="Explicit --from-event">
+    If you pass `--from-event <path>`, docsync reads that GitHub event JSON.
+  </Step>
+  <Step title="$GITHUB_EVENT_PATH (auto)">
+    If no diff flags are given and `$GITHUB_EVENT_PATH` is set (the normal GitHub Actions case), docsync reads it automatically — **no flags needed**.
+  </Step>
+  <Step title="Explicit --src-repo / --base / --head">
+    If all three are provided, docsync diffs those refs. `--src-repo` may be a local checkout path or a GitHub `owner/name`.
+  </Step>
+</Steps>
+
+<Warning>
+If none of the above is satisfied, the command fails with: *"provide --from-event (or run in CI with $GITHUB_EVENT_PATH set), or all of --src-repo / --base / --head."* Always make sure exactly one diff source is wired up.
+</Warning>
+
+### Supported GitHub event shapes
+
+When reading an event, docsync understands two shapes:
+
+- **`push`** — derives `repo` from `repository.full_name`, base from `before`, head from `after`, and the PR title from `head_commit.message` (no PR number).
+- **`repository_dispatch`** — reads `repo`, `base_sha`, `head_sha`, `pr_number`, and `pr_title` from `client_payload`. Use this to hand-roll a trigger from another repo's workflow.
+
+<Note>
+**First-push fallback:** on a branch's very first push, GitHub sends an all-zeros base SHA. docsync detects this null SHA and compares against `<head>^` (the head commit's first parent) so the diff is still meaningful instead of being against the empty tree.
+</Note>
+
+## GitHub Actions
+
+In Actions, the event JSON is already on disk at `$GITHUB_EVENT_PATH`, so `docsync run` needs only `--docs-repo`. This workflow checks out the docs repo and opens a PR on every push to the service repo.
+
+```yaml
+name: Sync docs
+on:
+  push:
+    branches: [main]
+
+jobs:
+  docsync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out docs repo
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/your-docs
+          token: ${{ secrets.DOCS_REPO_TOKEN }}
+          path: docs
+
+      - name: Install docsync
+        run: pip install docsync
+
+      - name: Run docsync
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+        run: |
+          docsync run \
+            --docs-repo docs \
+            --open-pr \
+            --backend api
+```
+
+Because no `--src-repo/--base/--head` flags are passed and `$GITHUB_EVENT_PATH` is set, docsync derives the service repo, base, head, and PR title straight from the push event.
+
+<Tabs>
+  <Tab title="Dry run (recommended first)">
+    Omit `--open-pr` (or pass `--dry-run`) for a no-write rollout. docsync computes impact, generates and validates edits, prints a console summary, and writes a `docsync.patch` next to the report so a human can inspect the proposed changes. Nothing is committed.
+
+    ```bash
+    docsync run --docs-repo docs --report-path docs-report.md
+    ```
+  </Tab>
+  <Tab title="Open a PR">
+    Add `--open-pr` to branch, commit the changed pages (plus the advanced cursor), push with `--force-with-lease`, and open or update a docs PR.
+
+    ```bash
+    docsync run --docs-repo docs --open-pr
+    ```
+  </Tab>
+</Tabs>
+
+## GitLab CI and other systems
+
+Outside GitHub Actions there is no `$GITHUB_EVENT_PATH`, so pass the diff explicitly with `--src-repo`, `--base`, and `--head`. Point `--src-repo` at a GitHub `owner/name` (or a local checkout path) and use the CI-provided commit SHAs.
+
+```yaml
+docsync:
+  image: python:3.12
+  variables:
+    ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
+  script:
+    - pip install docsync
+    - git clone https://oauth2:$DOCS_TOKEN@example.com/your-org/your-docs.git docs
+    - >
+      docsync run
+      --docs-repo docs
+      --src-repo your-org/your-service
+      --base $CI_COMMIT_BEFORE_SHA
+      --head $CI_COMMIT_SHA
+      --report-path docs-report.md
+  artifacts:
+    paths:
+      - docs/docsync.patch
+      - docs-report.md
+```
+
+<Note>
+Alternatively, construct a GitHub event JSON file yourself and pass it with `--from-event <path>`. The `repository_dispatch` shape (a `client_payload` with `repo`/`base_sha`/`head_sha`/`pr_number`/`pr_title`) is a convenient way to forward a comparison from any system.
+</Note>
+
+## Making CI runs safe and cheap
+
+`docsync run` includes several guards that matter most in automated pipelines.
+
+<Steps>
+  <Step title="Pre-flight manifest check (on by default)">
+    Before any LLM spend, docsync runs the manifest doctor. If the manifest references doc pages that no longer exist, the run **aborts with exit code 2** and lists the missing pages — a missing page would otherwise silently disable its anchor and read as "no drift." Fix `.docsync/manifest.yml` (or restore the page), or pass `--no-preflight` to bypass.
+  </Step>
+  <Step title="Cursor de-duplication">
+    docsync records the last processed `repo@head_sha`. If a run targets an already-processed head, it prints a skip message and exits `0`. On `--open-pr`, the advanced cursor is committed alongside the page changes.
+  </Step>
+  <Step title="Conservative first rollout">
+    Trim cost and scope while you build trust:
+
+    - `--min-confidence <0-1>` — skip the edit stage for pages below this impact confidence (overrides the configured floor). Anchor-matched pages autopass at confidence `1.0`, so this only gates judge/embedding-sourced pages.
+    - `--max-pages <n>` — cap how many (highest-confidence-first) pages reach the edit stage; the rest are reported, not edited.
+    - `--max-parallel <n>` — cap concurrent LLM requests for the judge and edit stages.
+  </Step>
+  <Step title="Optional quality gates">
+    - `--check-links` — run the Mintlify broken-link soft gate.
+    - `--self-critique` — adversarially re-check each generated edit against the diff (one judge-model call per page) and drop edits the change doesn't justify.
+    - `--use-embeddings` (on by default) — also surface drift on pages the manifest doesn't anchor; degrades to anchors-only if the embeddings extra isn't installed. Persisted under `.docsync/state/embeddings`, which is worth caching between CI runs.
+  </Step>
+</Steps>
+
+## Interpreting exit codes and output
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Success, or a no-op: head already processed, no validated changes, or a dry run that wrote no files. |
+| `2` | Pre-flight failed — the manifest references missing page(s). |
+
+What a run produces:
+
+- A **console summary** of the outcome, always printed.
+- A **PR-body markdown** report, written to `--report-path` when provided.
+- In dry-run mode, a **`docsync.patch`** in the docs repo (skipped without error if the docs repo isn't a git checkout).
+- In `--open-pr` mode, a **docs PR** on branch `docsync/<service-slug>-<head_sha[:8]>`, with any configured reviewers and labels. Re-running on the same head force-pushes and **updates the existing PR in place** rather than opening a duplicate.
+
+<Warning>
+PR creation depends on `gh` being installed and authenticated. If `gh` or the push is unavailable, docsync does not crash — it returns the branch name (and the `gh` error) instead of a PR URL, so check the command output in your CI logs.
+</Warning>
+
+## Cheaper inspection commands
+
+For a fast, no-LLM look at what a change would touch, the CLI also exposes:
+
+- `docsync map …` — impact mapping only (no LLM edits), useful as a cheap dry inspection.
+- `docsync index …` — build or refresh the embeddings index (the optional recall-net).
+
+Use `docsync map` in a PR check when you want to see impacted pages without spending on edit generation.

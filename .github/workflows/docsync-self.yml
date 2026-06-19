@@ -1,0 +1,67 @@
+# docsync — self-hosted dogfood loop.
+#
+# When docsync's own source changes on `main`, run docsync against itself and open a
+# PR that updates the docs/ site to match. This is the live differentiator proven on
+# docsync itself: a single repo, no cross-repo dispatch — the source and the docs live
+# together, so install is editable (`pip install -e .`) and the diff/PR both target
+# THIS repo via the auto-provided GITHUB_TOKEN.
+#
+# Required repo secret:
+#   ANTHROPIC_API_KEY  — Opus edits + Haiku judge (the `api` backend).
+# GITHUB_TOKEN is provided automatically by Actions and is used to (a) read the push
+# diff via the GitHub API and (b) open the docs PR in this repo.
+#
+# Repo setting required once:
+#   Settings -> Actions -> General -> Workflow permissions ->
+#     "Allow GitHub Actions to create and approve pull requests"  (for --open-pr)
+#
+# Human-in-the-loop: this opens a PR and NEVER merges it. Keep branch protection on
+# `main` requiring review so docsync's edits are always approved by a person.
+name: docsync-self
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/docsync/**"
+  workflow_dispatch: {} # allow a manual re-run against the latest commit
+
+permissions:
+  contents: write # commit the doc updates to a branch
+  pull-requests: write # open the docs PR
+
+concurrency:
+  group: docsync-self-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the push diff (before..after) resolves
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Same-repo install — docsync documents itself, so the engine is right here.
+      - name: Install docsync
+        run: pip install -e ".[embeddings]"
+
+      - name: Identify the committer for the docs PR branch
+        run: |
+          git config user.name  "docsync[bot]"
+          git config user.email "docsync-bot@users.noreply.github.com"
+
+      - name: Sync docs with the code change (opens a PR; never auto-merges)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # reads the push diff via API + opens the PR
+        run: |
+          docsync run \
+            --from-event "$GITHUB_EVENT_PATH" \
+            --docs-repo . \
+            --backend api \
+            --open-pr
