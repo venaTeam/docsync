@@ -256,3 +256,91 @@ def test_config_floor_is_respected(tmp_path: Path, floor: float):
         _diff_touching_metrics(), root, None, cfg, encoder=_fake_encode,
     )
     assert all(c.score >= floor for c in cands)
+
+
+# ---------------------------------------------------------------------------
+# Code-side index (docsync infer) — embed source units, query by page content
+# ---------------------------------------------------------------------------
+
+
+def _make_code(tmp_path: Path):
+    """A tiny source checkout -> a RepoDigest, with real files so read_excerpt works."""
+    from docsync.ingest import walk_repo
+
+    root = tmp_path / "svc"
+    (root / "src" / "routes").mkdir(parents=True)
+    (root / "src" / "routes" / "alerts.py").write_text(
+        "def get_alerts():\n    # prometheus alerting routes endpoint handler\n    return []\n",
+        encoding="utf-8",
+    )
+    (root / "src" / "auth.py").write_text(
+        "def login():\n    # identity oauth session cookie backends\n    return None\n",
+        encoding="utf-8",
+    )
+    return walk_repo(root, repo="svc")
+
+
+def test_build_code_index_one_row_per_unit_normalized(tmp_path: Path):
+    digest = _make_code(tmp_path)
+    idx = emb.build_code_index([digest], encoder=_fake_encode)
+    assert idx.unit_keys == [("svc", "src/auth.py"), ("svc", "src/routes/alerts.py")]
+    assert idx.vectors.shape[0] == len(idx.unit_keys) == 2
+    norms = np.linalg.norm(idx.vectors, axis=1)
+    assert np.allclose(norms, 1.0, atol=1e-5)
+
+
+def test_query_code_index_ranks_relevant_unit_first(tmp_path: Path):
+    digest = _make_code(tmp_path)
+    idx = emb.build_code_index([digest], encoder=_fake_encode)
+    hits = emb.query_code_index(
+        idx, "prometheus alerting routes endpoint handler", encoder=_fake_encode,
+        top_k=1, floor=0.0,
+    )
+    assert hits and hits[0][0] == ("svc", "src/routes/alerts.py")
+
+
+def test_query_code_index_respects_floor_and_top_k(tmp_path: Path):
+    digest = _make_code(tmp_path)
+    idx = emb.build_code_index([digest], encoder=_fake_encode)
+    capped = emb.query_code_index(
+        idx, "identity oauth session cookie", encoder=_fake_encode, top_k=1, floor=0.0
+    )
+    assert len(capped) <= 1
+    floored = emb.query_code_index(
+        idx, "identity oauth session cookie", encoder=_fake_encode, top_k=5, floor=0.99
+    )
+    assert all(score >= 0.99 for _, score in floored)
+
+
+def test_code_index_cache_hit_and_rebuild(tmp_path: Path):
+    digest = _make_code(tmp_path)
+    cache = tmp_path / "cache"
+    enc = CountingEncoder()
+    emb.load_or_build_code_index([digest], cache, encoder=enc)
+    assert enc.calls == 1
+    # Same units -> cache hit, no re-encode.
+    emb.load_or_build_code_index([digest], cache, encoder=enc)
+    assert enc.calls == 1
+    # A new symbol changes the content hash -> rebuild.
+    (Path(digest.root) / "src" / "new.py").write_text("def fresh():\n    pass\n", encoding="utf-8")
+    from docsync.ingest import walk_repo
+
+    digest2 = walk_repo(digest.root, repo="svc")
+    emb.load_or_build_code_index([digest2], cache, encoder=enc)
+    assert enc.calls == 2
+
+
+def test_code_units_content_hash_excludes_excerpt(tmp_path: Path):
+    # Editing a file body (not its path/symbols) must NOT bust the code-index key.
+    digest = _make_code(tmp_path)
+    keys = [(digest.repo, u.path) for u in digest.units]
+    syms = [list(u.symbols) for u in digest.units]
+    h1 = emb.code_units_content_hash(keys, syms, emb.DEFAULT_MODEL)
+    body = Path(digest.root) / digest.units[0].path
+    body.write_text(body.read_text() + "\n# a new comment, no new symbol\n", encoding="utf-8")
+    from docsync.ingest import walk_repo
+
+    digest2 = walk_repo(digest.root, repo="svc")
+    keys2 = [(digest2.repo, u.path) for u in digest2.units]
+    syms2 = [list(u.symbols) for u in digest2.units]
+    assert emb.code_units_content_hash(keys2, syms2, emb.DEFAULT_MODEL) == h1

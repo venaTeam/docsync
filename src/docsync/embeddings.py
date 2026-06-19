@@ -21,9 +21,12 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import TYPE_CHECKING, Callable, Iterator
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .models import RepoDigest
 
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
@@ -32,6 +35,10 @@ Encoder = Callable[[list[str]], "np.ndarray"]
 
 _META_FILE = "index.json"
 _VECTORS_FILE = "vectors.npy"
+
+# How many chars of a source file to fold into its embedded text (path + symbols carry
+# most of the signal; a short excerpt sharpens it without making the encode pass costly).
+_CODE_EXCERPT_CHARS = 600
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +255,181 @@ def query_index(
         if score < floor:
             continue
         out.append((page_path, score))
+        if len(out) >= top_k:
+            break
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Code-side index — the REVERSE direction, for `docsync infer`
+# ---------------------------------------------------------------------------
+#
+# The doc index above embeds doc chunks and is queried by a code diff. Inference needs
+# the opposite: embed source *units* (one vector per file) and query by an existing
+# page's content, to shortlist the code a page likely documents. Same encoder, same
+# normalized-cosine math, same on-disk cache shape — only the rows differ.
+
+
+def _unit_text(repo: str, path: str, symbols: list[str], excerpt: str) -> str:
+    """The text embedded for one source unit (units carry no body of their own)."""
+    head = f"{repo}/{path}\n{' '.join(symbols)}".strip()
+    return f"{head}\n{excerpt}".strip() if excerpt else head
+
+
+def code_units_content_hash(
+    unit_keys: list[tuple[str, str]], all_symbols: list[list[str]], model_name: str
+) -> str:
+    """Stable hash over (repo, path, symbols) + model — excludes excerpts on purpose.
+
+    A source file's *body* edit that doesn't change its path/symbols shouldn't bust the
+    code index (the anchor signal is path + symbols), so the excerpt is left out of the
+    key — mirroring `chunks_content_hash` but for code units.
+    """
+    h = hashlib.sha256()
+    h.update(model_name.encode("utf-8"))
+    for (repo, path), symbols in zip(unit_keys, all_symbols):
+        h.update(b"\x00")
+        h.update(repo.encode("utf-8"))
+        h.update(b"\x01")
+        h.update(path.encode("utf-8"))
+        for sym in symbols:
+            h.update(b"\x02")
+            h.update(sym.encode("utf-8"))
+    return h.hexdigest()
+
+
+@dataclass
+class CodeIndex:
+    """A normalized embedding matrix over source units, with provenance for caching."""
+
+    model_name: str
+    content_hash: str
+    unit_keys: list[tuple[str, str]]  # (repo, path) per row of `vectors`
+    vectors: np.ndarray  # (n_units, dim), L2-normalized
+
+    def save(self, cache_dir: Path) -> None:
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        np.save(cache_dir / _VECTORS_FILE, self.vectors)
+        (cache_dir / _META_FILE).write_text(
+            json.dumps(
+                {
+                    "model_name": self.model_name,
+                    "content_hash": self.content_hash,
+                    # JSON has no tuples — store as [repo, path] pairs, restore on load.
+                    "unit_keys": [[repo, path] for repo, path in self.unit_keys],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, cache_dir: Path) -> "CodeIndex | None":
+        cache_dir = Path(cache_dir)
+        meta_path = cache_dir / _META_FILE
+        vec_path = cache_dir / _VECTORS_FILE
+        if not meta_path.exists() or not vec_path.exists():
+            return None
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            vectors = np.load(vec_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if "unit_keys" not in meta:  # a doc index saved here by mistake — ignore it
+            return None
+        return cls(
+            model_name=meta["model_name"],
+            content_hash=meta["content_hash"],
+            unit_keys=[(repo, path) for repo, path in meta["unit_keys"]],
+            vectors=vectors,
+        )
+
+
+def _iter_code_units(
+    digests: list["RepoDigest"],
+) -> Iterator[tuple[tuple[str, str], list[str], str]]:
+    """Yield ((repo, path), symbols, excerpt) for every unit across all digests."""
+    from . import ingest as ingest_mod  # local import keeps this module import-light
+
+    for digest in digests:
+        for unit in digest.units:
+            excerpt = ingest_mod.read_excerpt(
+                digest.root, unit.path, max_chars=_CODE_EXCERPT_CHARS
+            )
+            yield (digest.repo, unit.path), list(unit.symbols), excerpt
+
+
+def build_code_index(
+    digests: list["RepoDigest"],
+    *,
+    model_name: str = DEFAULT_MODEL,
+    encoder: Encoder | None = None,
+) -> CodeIndex:
+    """Encode every source unit into a normalized matrix (one row per file)."""
+    rows = list(_iter_code_units(digests))
+    unit_keys = [key for key, _, _ in rows]
+    all_symbols = [syms for _, syms, _ in rows]
+    content_hash = code_units_content_hash(unit_keys, all_symbols, model_name)
+    if not rows:
+        return CodeIndex(model_name, content_hash, [], np.zeros((0, 0), dtype=np.float32))
+    enc = encoder or default_encoder(model_name)
+    texts = [_unit_text(repo, path, syms, exc) for (repo, path), syms, exc in rows]
+    vectors = _normalize(enc(texts))
+    return CodeIndex(model_name, content_hash, unit_keys, vectors)
+
+
+def load_or_build_code_index(
+    digests: list["RepoDigest"],
+    cache_dir: Path | None,
+    *,
+    model_name: str = DEFAULT_MODEL,
+    encoder: Encoder | None = None,
+) -> CodeIndex:
+    """Return a cached code index if its content hash still matches, else (re)build."""
+    rows = list(_iter_code_units(digests))
+    want = code_units_content_hash(
+        [k for k, _, _ in rows], [s for _, s, _ in rows], model_name
+    )
+    if cache_dir is not None:
+        cached = CodeIndex.load(cache_dir)
+        if cached is not None and cached.content_hash == want and cached.model_name == model_name:
+            return cached
+    index = build_code_index(digests, model_name=model_name, encoder=encoder)
+    if cache_dir is not None:
+        index.save(cache_dir)
+    return index
+
+
+def query_code_index(
+    index: CodeIndex,
+    query_text: str,
+    *,
+    encoder: Encoder | None = None,
+    model_name: str = DEFAULT_MODEL,
+    top_k: int = 5,
+    floor: float = 0.2,
+) -> list[tuple[tuple[str, str], float]]:
+    """Rank source units by cosine similarity to `query_text` (a page's content).
+
+    Returns up to `top_k` ((repo, path), score) pairs with score >= `floor`, highest
+    first — the shortlist of code a page most likely documents.
+    """
+    if index.vectors.shape[0] == 0:
+        return []
+    enc = encoder or default_encoder(model_name)
+    qv = _normalize(enc([query_text]))[0]
+    sims = index.vectors @ qv
+    ranked = sorted(
+        zip(index.unit_keys, (float(s) for s in sims)),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )
+    out: list[tuple[tuple[str, str], float]] = []
+    for key, score in ranked:
+        if score < floor:
+            continue
+        out.append((key, score))
         if len(out) >= top_k:
             break
     return out
