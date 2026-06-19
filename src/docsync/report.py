@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 
 from .cost import render_usage_console, render_usage_md
-from .models import BootstrapResult, PipelineResult
+from .models import BootstrapResult, InferResult, PipelineResult
 
 
 def _unified(page_path: str, before: str, after: str) -> str:
@@ -169,3 +169,43 @@ def bootstrap_pr_body(result: BootstrapResult) -> str:
         "newly-generated pages — review for accuracy before merging._"
     )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Inference (anchoring an existing docs site)
+# ---------------------------------------------------------------------------
+
+
+_INFER_MARKS = {"anchored": "✓", "low_confidence": "~", "no_match": "·"}
+
+
+def infer_console_summary(result: InferResult) -> str:
+    """Short terminal summary for `docsync infer`: per-page anchor status.
+
+    `✓` anchored (will be written), `~` low-confidence (reported, not written), `·`
+    no match. Already-anchored pages are noted as skipped.
+    """
+    anchored = result.anchored()
+    out = [
+        f"docsync infer: {len(result.pages)} page(s) examined, {len(anchored)} anchored, "
+        f"{len(result.skipped_already_anchored)} already in the manifest."
+    ]
+    for p in result.pages:
+        mark = _INFER_MARKS.get(p.status, "·")
+        if p.status == "anchored":
+            srcs = "; ".join(
+                f"{s.repo}:{','.join(s.globs)}"
+                + (f" [{','.join(s.symbols)}]" if s.symbols else "")
+                for s in p.sources
+            )
+            out.append(
+                f"  {mark} {p.page_path} — {p.kind}"
+                + (" (judged)" if p.judge_required else "")
+                + f", conf {p.confidence:.2f} → {srcs}"
+            )
+        else:
+            out.append(f"  {mark} {p.page_path} — {p.status}: {p.reason}")
+    cost_line = render_usage_console(result.usage)
+    if cost_line:
+        out.append(cost_line)
+    return "\n".join(out)
