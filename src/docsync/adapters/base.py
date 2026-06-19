@@ -45,6 +45,16 @@ class DocAdapter(ABC):
         """
         return []
 
+    def repair_structure(self, text: str) -> str:
+        """Best-effort fix for the *safe* problems `structural_problems` reports.
+
+        Only the unambiguous, low-risk repairs (close trailing unclosed components,
+        drop stray closers); ambiguous cases (mis-nesting, fences) are left for the
+        validator to reject. Default: identity (subclasses override). The result is
+        always re-validated by the caller, so a bad repair can never ship.
+        """
+        return text
+
     @abstractmethod
     def check_links(self, docs_root: Path) -> list[str]:
         """Run the framework's broken-link check over a patched tree.

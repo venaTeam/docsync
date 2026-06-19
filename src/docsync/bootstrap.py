@@ -353,6 +353,10 @@ def run_bootstrap(
         except Exception as exc:  # noqa: BLE001 - one bad page must not abort the pool
             outcome.note = f"author failed: {exc}"
             return outcome
+        # Best-effort repair of safe structural slips (an unclosed <Steps>, a stray
+        # </Note>) before the hard gate — recovers pages that cost real Opus spend.
+        # The repaired text is what we validate and write, so nothing unsafe ships.
+        text = adapter.repair_structure(text)
         validation = validate_new_page(
             planned.page_path, text, adapter,
             check_links=check_links, docs_root=docs_root,
