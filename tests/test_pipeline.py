@@ -238,6 +238,40 @@ def test_pipeline_parallel_is_deterministic(two_page_repo: Path):
     assert len(r1.changed()) == 2
 
 
+def test_write_changes_returns_repo_root_relative_paths(tmp_path: Path):
+    # Self-hosted layout: docs live in a `docs/` subdir, not at the repo root. The
+    # returned paths must be prefixed with docs_root so `git add` (run from the repo
+    # root in pr.open_pr) finds them — the bug that crashed the live self-docs loop.
+    repo = tmp_path / "repo"
+    (repo / "docs" / "services").mkdir(parents=True)
+    (repo / "docs" / "services" / "api-gateway.mdx").write_text(PAGE, encoding="utf-8")
+    (repo / ".docsync").mkdir()
+    (repo / ".docsync" / "manifest.yml").write_text(MANIFEST_YML, encoding="utf-8")
+
+    config = DocsyncConfig(docs_root="docs")
+    manifest = load_manifest(repo)
+    edit = PageEdit(
+        edits=[
+            EditOp(
+                find="| POST | /alerts | Ingest an alert |",
+                replace=(
+                    "| POST | /alerts | Ingest an alert |\n"
+                    "| POST | /alerts/bulk | Bulk-ingest alerts |"
+                ),
+                rationale="new route",
+            )
+        ]
+    )
+    client = FakeClient(JudgeVerdict(page_path="x", affected=True, confidence=0.9, reason="r"), edit)
+
+    result = pipeline.run(_diff(), repo, config, manifest, client=client)
+    written = pipeline.write_changes(result, repo, config)
+
+    assert written == ["docs/services/api-gateway.mdx"]
+    # Each returned path resolves to a real file from the repo root (what git add needs).
+    assert (repo / written[0]).exists()
+
+
 def test_pipeline_idempotency_cursor(docs_repo: Path):
     # The cursor itself is enforced by the CLI, but confirm the helper round-trips.
     save_cursors(docs_repo, {"keephq/keep-api-gateway": "bbbbbbbb"})
