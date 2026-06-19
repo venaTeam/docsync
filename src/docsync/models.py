@@ -235,6 +235,11 @@ class DocsyncConfig(BaseModel):
 
     models: ModelConfig = Field(default_factory=ModelConfig)
     docs_root: str = "."  # root of the docs tree, relative to the docs repo
+    # Extra directory names to prune during ingest, on top of ingest.DEFAULT_EXCLUDE_DIRS.
+    # Use this to skip repo-specific noise that isn't the product surface you document
+    # (e.g. "examples", "deploy", "docs", a generated site dir) so it doesn't inflate
+    # the plan or token cost. Matched by directory *name* anywhere in the tree.
+    ingest_exclude_dirs: list[str] = Field(default_factory=list)
     # When the judge's confidence is >= this, an embedding/judge candidate is kept.
     judge_confidence_threshold: float = 0.5
     # Anchor hits at or above this judge confidence skip the judge entirely.

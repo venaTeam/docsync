@@ -33,8 +33,20 @@ DEFAULT_EXCLUDE_DIRS = frozenset(
         ".git", ".github", "node_modules", ".venv", "venv", "__pycache__",
         ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build", ".next",
         "tests", "test", "migrations", "__tests__", ".docsync",
+        # Universally non-product noise — never the surface you document.
+        ".tox", "htmlcov", "coverage", "site-packages", "vendor", ".idea", ".vscode",
     }
 )
+
+
+def resolve_exclude_dirs(extra: list[str] | None = None) -> frozenset[str]:
+    """Combine :data:`DEFAULT_EXCLUDE_DIRS` with caller/config-supplied names.
+
+    `extra` is typically ``DocsyncConfig.ingest_exclude_dirs`` — repo-specific dirs
+    (e.g. ``examples``, ``deploy``, a generated ``docs`` site) that are noise for the
+    plan but too project-specific to bake into the defaults. Blank entries are dropped.
+    """
+    return DEFAULT_EXCLUDE_DIRS | frozenset(d.strip() for d in (extra or []) if d.strip())
 
 # Per-file excerpt budget handed to the author stage (chars). Generous enough to
 # show a route module's signatures without blowing the author prompt.

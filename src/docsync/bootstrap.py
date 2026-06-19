@@ -331,7 +331,9 @@ def run_bootstrap(
     if client is not None:
         client = MeteredClient(client, meter)
 
-    digests = ingest_mod.walk_repos(repos)
+    digests = ingest_mod.walk_repos(
+        repos, exclude_dirs=ingest_mod.resolve_exclude_dirs(config.ingest_exclude_dirs)
+    )
     repo_units = _repo_units(digests)
     result = BootstrapResult(repo=", ".join(d.repo for d in digests))
 

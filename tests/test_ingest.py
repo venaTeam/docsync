@@ -13,7 +13,9 @@ from docsync.ingest import (
     DEFAULT_INCLUDE,
     extract_symbols,
     read_excerpt,
+    resolve_exclude_dirs,
     walk_repo,
+    walk_repos,
 )
 from docsync.models import RepoDigest, SourceUnit
 
@@ -165,6 +167,42 @@ def test_walk_repo_max_files_cap(tmp_path: Path) -> None:
     digest = walk_repo(tmp_path, max_files=2)
     assert len(digest.units) <= 2
     assert all(isinstance(u, SourceUnit) for u in digest.units)
+
+
+# ---------------------------------------------------------------------------
+# resolve_exclude_dirs — config-driven pruning
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_exclude_dirs_unions_defaults_and_extra() -> None:
+    resolved = resolve_exclude_dirs(["examples", "deploy"])
+    # Extras are added on top of the defaults (which stay intact).
+    assert DEFAULT_EXCLUDE_DIRS <= resolved
+    assert {"examples", "deploy"} <= resolved
+
+
+def test_resolve_exclude_dirs_drops_blanks_and_handles_none() -> None:
+    assert resolve_exclude_dirs(None) == DEFAULT_EXCLUDE_DIRS
+    assert resolve_exclude_dirs(["", "  "]) == DEFAULT_EXCLUDE_DIRS
+    # Whitespace around a real name is stripped before union.
+    assert "examples" in resolve_exclude_dirs(["  examples  "])
+
+
+def test_walk_repos_honors_config_extra_excludes(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def get_app():\n    return 1\n")
+    (tmp_path / "examples").mkdir()
+    (tmp_path / "examples" / "demo.py").write_text("def demo():\n    return 2\n")
+
+    # Without the extra exclude, examples/ is ingested...
+    [plain] = walk_repos([("r", tmp_path)])
+    assert "examples/demo.py" in {u.path for u in plain.units}
+
+    # ...with it (as bootstrap passes config.ingest_exclude_dirs), it's pruned.
+    [pruned] = walk_repos([("r", tmp_path)], exclude_dirs=resolve_exclude_dirs(["examples"]))
+    paths = {u.path for u in pruned.units}
+    assert "examples/demo.py" not in paths
+    assert "src/app.py" in paths
 
 
 # ---------------------------------------------------------------------------

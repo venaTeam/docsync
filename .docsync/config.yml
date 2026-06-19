@@ -6,6 +6,9 @@ models:
   edit_effort: high
 # Root of the docs tree, relative to this repo (the Mintlify site lives in docs/).
 docs_root: "docs"
+# Repo-specific dirs to skip on ingest (on top of the built-in defaults) — these
+# aren't the product surface docsync documents, so keep them out of the plan.
+ingest_exclude_dirs: [examples, deploy, node-validate, docs]
 # GitHub handles requested as reviewers on opened doc-update PRs.
 reviewers: []
 # Labels applied to opened docs PRs (auto-created in this repo if missing).
