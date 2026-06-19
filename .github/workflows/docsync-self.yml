@@ -58,10 +58,19 @@ jobs:
       - name: Sync docs with the code change (opens a PR; never auto-merges)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # reads the push diff via API + opens the PR
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # reads the diff via API (push) + opens the PR
         run: |
-          docsync run \
-            --from-event "$GITHUB_EVENT_PATH" \
-            --docs-repo . \
-            --backend api \
-            --open-pr
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual run: docsync can't parse a workflow_dispatch event, so diff the
+            # latest commit against its parent from the full local checkout instead
+            # (fetch-depth: 0 above guarantees HEAD~1 is present). Pass the workspace
+            # PATH (not "."), so the diff's repo key is its last segment — "docsync" —
+            # which matches the manifest anchors (impact._repo_key).
+            docsync run \
+              --src-repo "$GITHUB_WORKSPACE" --base HEAD~1 --head HEAD \
+              --docs-repo . --backend api --open-pr
+          else
+            docsync run \
+              --from-event "$GITHUB_EVENT_PATH" \
+              --docs-repo . --backend api --open-pr
+          fi
