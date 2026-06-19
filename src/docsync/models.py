@@ -458,9 +458,13 @@ class InferredAnchors(BaseModel):
     """
 
     page_path: str
+    # `confidence` is required (no default) on purpose: it keeps the model from having a
+    # single required str field, which the claude-code backend would mis-route as a
+    # whole-document output (stuffing the raw JSON into `page_path`). The judge is asked
+    # for a calibrated confidence on every page regardless.
+    confidence: float = Field(ge=0.0, le=1.0)
     sources: list[InferredSource] = Field(default_factory=list)
     kind: PageKind = "reference"
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str = ""
 
 

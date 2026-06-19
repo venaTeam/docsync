@@ -309,6 +309,15 @@ def test_missing_embeddings_extra_raises_importerror(repo, monkeypatch):
         infer_mod.run_infer([("svc", src)], docs, _cfg(), client=FakeJudge({}), encoder=None)
 
 
+def test_inferred_anchors_routes_through_json_backend():
+    # Guard: InferredAnchors must NOT look like a single-required-str-field document
+    # model, or the claude-code backend stuffs the whole JSON reply into page_path and
+    # every anchor comes back empty (the dogfood bug).
+    from docsync.llm_backends import _single_text_field
+
+    assert _single_text_field(InferredAnchors) is None
+
+
 def test_collapse_globs_exact_sibling_cover():
     paths = ["src/routes/a.py", "src/routes/b.py", "src/cli.py"]
     # Both siblings present and they are the ONLY .py in src/routes -> collapse.
