@@ -9,7 +9,7 @@ import pytest
 
 from docsync.adapters.mintlify import MintlifyAdapter
 from docsync.models import ManifestPage
-from docsync.validate import get_adapter, validate_page
+from docsync.validate import get_adapter, validate_new_page, validate_page
 
 PAGE = "docs/example.mdx"
 
@@ -212,6 +212,56 @@ def test_structural_problems_flags_unclosed_and_self_closing_ok():
 
 
 # ---------------------------------------------------------------------------
+# repair_structure — safe auto-repair before the hard gate
+# ---------------------------------------------------------------------------
+
+
+def test_repair_closes_trailing_unclosed_components():
+    a = _adapter()
+    broken = "# T\n\n<Steps>\n<Step>do it</Step>\n<Step>more\n"
+    fixed = a.repair_structure(broken)
+    assert a.structural_problems(fixed) == []  # now well-formed
+    assert fixed.rstrip().endswith("</Step>\n</Steps>")  # innermost closed first
+
+
+def test_repair_drops_stray_closer():
+    a = _adapter()
+    broken = "# T\n\nbody text here</Note>\n\nmore body\n"
+    fixed = a.repair_structure(broken)
+    assert a.structural_problems(fixed) == []
+    assert "</Note>" not in fixed
+
+
+def test_repair_is_noop_on_well_formed_text():
+    a = _adapter()
+    good = "# T\n\n<Note>all good</Note>\n"
+    assert a.repair_structure(good) == good
+
+
+def test_repair_bails_on_ambiguous_misnesting():
+    a = _adapter()
+    # A closer matching an *inner* open is ambiguous — leave it for the validator.
+    misnested = "<Note><Tip>x</Note></Tip>"
+    assert a.repair_structure(misnested) == misnested
+
+
+def test_repair_ignores_tags_inside_code():
+    a = _adapter()
+    in_code = "# T\n\n```\n<Steps>\n```\n\nreal body\n"
+    assert a.repair_structure(in_code) == in_code  # the <Steps> is example text
+
+
+def test_repair_then_validate_recovers_a_dropped_page():
+    # The exact failure mode bootstrap hit: an unclosed <Steps>/<Step> that the
+    # validator rejects — repair makes it pass the hard gate.
+    a = _adapter()
+    body = "Guide content. " * 30
+    broken = f"---\ntitle: T\ndescription: d\n---\n\n# T\n\n{body}\n\n<Steps>\n<Step>one\n"
+    assert not validate_new_page(PAGE, broken, a).passed
+    assert validate_new_page(PAGE, a.repair_structure(broken), a).passed
+
+
+# ---------------------------------------------------------------------------
 # Hard gate 3 — diff-size guardrail
 # ---------------------------------------------------------------------------
 
@@ -285,5 +335,22 @@ def test_link_check_is_soft(tmp_path, monkeypatch):
 
 
 def test_check_links_never_raises(tmp_path):
-    # No mintlify CLI in the test env -> must return [] without raising.
+    # Whether or not a mintlify CLI is on PATH, an empty dir has no broken links,
+    # so this must return [] without raising (a success line is not a finding).
     assert _adapter().check_links(tmp_path) == []
+
+
+def test_parse_link_output_ignores_success_line():
+    # Mintlify's "no broken links" success line contains "broken" but is NOT a
+    # finding — only genuine problem lines should survive.
+    output = (
+        "checking for broken links...\n"
+        "success no broken links found\n"
+    )
+    assert MintlifyAdapter._parse_link_output(output) == []
+
+
+def test_parse_link_output_keeps_real_problems():
+    output = "✓ /docs/intro\n/docs/missing — 404 not found\n"
+    problems = MintlifyAdapter._parse_link_output(output)
+    assert problems == ["/docs/missing — 404 not found"]

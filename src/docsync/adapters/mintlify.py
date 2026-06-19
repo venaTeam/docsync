@@ -66,9 +66,30 @@ _TAG_RE = re.compile(r"<(/?)([A-Z][A-Za-z]*)\b[^>]*?(/?)>", re.DOTALL)
 _FENCE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`]*`")
 
+
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """(start, end) char ranges of fenced + inline code — regions to leave untouched."""
+    spans = [m.span() for m in _FENCE_BLOCK_RE.finditer(text)]
+    spans += [m.span() for m in _INLINE_CODE_RE.finditer(text)]
+    return spans
+
+
+def _pos_in_spans(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
 # Broken-link check tuning: be defensive, never let the doc pipeline hang on it.
 _LINK_CHECK_TIMEOUT_S = 30
 _LINK_PROBLEM_RE = re.compile(r"broken|not found|404|missing|unreachable", re.IGNORECASE)
+# Success/negation lines that contain a problem keyword but report the ABSENCE of
+# problems (e.g. Mintlify's "success no broken links found"). These must not be
+# mistaken for findings just because they say "broken".
+_LINK_OK_RE = re.compile(
+    r"no broken|0 broken|success|all links|no issues|no problems|✓|✔", re.IGNORECASE
+)
+# A real broken-link finding names the offending target (a URL, a path, or a doc
+# file); status/progress lines like "checking for broken links..." do not. Requiring
+# a target reference filters that tooling chatter without enumerating every phrase.
+_LINK_REF_RE = re.compile(r"https?://|/|\.mdx?\b", re.IGNORECASE)
 # Output that means the CLI itself never ran (package absent, npx aborted, ...).
 # Such lines must NOT be mistaken for broken-link findings.
 _CLI_UNAVAILABLE_RE = re.compile(
@@ -179,6 +200,46 @@ class MintlifyAdapter(DocAdapter):
         problems.extend(f"unclosed <{name}> (no matching close tag)" for name in stack)
         return problems
 
+    def repair_structure(self, text: str) -> str:
+        """Close trailing unclosed components and drop stray closers (safe repairs).
+
+        Mirrors `structural_problems`' stack walk but rewrites the text:
+          - an unclosed `<Steps>` left on the stack → append `</Steps>` at the end;
+          - a stray `</Note>` matching no open tag → delete that tag.
+        Mis-nesting (a closer that matches an *inner* open) is ambiguous, so we bail
+        and return the text unchanged for the validator to reject. Tags inside code
+        are never touched. Idempotent: repairing well-formed text is a no-op.
+        """
+        spans = _code_spans(text)
+        stack: list[str] = []
+        strays: list[tuple[int, int]] = []  # (start, end) of stray closers to delete
+
+        for match in _TAG_RE.finditer(text):
+            if _pos_in_spans(match.start(), spans):
+                continue
+            closing, name, self_closing = match.group(1), match.group(2), match.group(3)
+            if name not in _KNOWN_COMPONENTS or self_closing:
+                continue
+            if not closing:
+                stack.append(name)
+            elif stack and stack[-1] == name:
+                stack.pop()
+            elif name in stack:
+                return text  # mis-nesting — too risky to auto-fix
+            else:
+                strays.append(match.span())
+
+        if not stack and not strays:
+            return text  # already well-formed — nothing to do
+
+        out = text
+        for start, end in sorted(strays, reverse=True):  # right-to-left keeps offsets
+            out = out[:start] + out[end:]
+        if stack:
+            closers = "\n".join(f"</{name}>" for name in reversed(stack))
+            out = out.rstrip() + "\n\n" + closers + "\n"
+        return out
+
     # -- link check (soft gate) -------------------------------------------
 
     def check_links(self, docs_root: Path) -> list[str]:
@@ -234,7 +295,12 @@ class MintlifyAdapter(DocAdapter):
         try:
             for raw_line in output.splitlines():
                 line = raw_line.strip()
-                if line and _LINK_PROBLEM_RE.search(line):
+                if (
+                    line
+                    and _LINK_PROBLEM_RE.search(line)
+                    and _LINK_REF_RE.search(line)
+                    and not _LINK_OK_RE.search(line)
+                ):
                     problems.append(line)
         except Exception:
             return []
