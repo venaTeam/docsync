@@ -12,6 +12,11 @@ dist/
 .docsync/state/embeddings/
 *.index.npy
 
+# docsync dry-run artifacts (the patch + report are inspection-only)
+*.patch
+docsync.patch
+docsync-bootstrap.patch
+
 # Node (validation sidecar)
 node-validate/node_modules/
 
