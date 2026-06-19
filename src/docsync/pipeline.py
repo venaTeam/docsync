@@ -211,16 +211,19 @@ def run(
 
 
 def write_changes(result: PipelineResult, docs_repo: Path, config: DocsyncConfig) -> list[str]:
-    """Write validated page edits to disk. Returns the list of written page paths.
+    """Write validated page edits to disk. Returns the written paths, repo-root-relative.
 
-    Used in non-dry-run mode before committing / opening a PR. Never touches
-    the .docsync directory.
+    Page paths are stored relative to ``docs_root``; the returned paths are prefixed
+    with ``config.docs_root`` so they're relative to the docs *repo* root — what
+    ``pr.open_pr`` needs for ``git add`` (it runs from the repo root, and docs may
+    live in a subdirectory like ``docs/``). Never touches the .docsync directory.
     """
     docs_root = Path(docs_repo) / config.docs_root
+    prefix = Path(config.docs_root)
     written: list[str] = []
     for outcome in result.changed():
         if outcome.page_path.startswith(DOCSYNC_DIR):
             continue
         (docs_root / outcome.page_path).write_text(outcome.new_content, encoding="utf-8")
-        written.append(outcome.page_path)
+        written.append((prefix / outcome.page_path).as_posix())
     return written
