@@ -1,0 +1,176 @@
+---
+title: "Page Format & Frontmatter"
+description: "Specification for the documentation page format enforced by the docsync validation gates — required frontmatter metadata, MDX structure rules, and the per-gate checks that decide whether a page is accepted."
+---
+
+A documentation page handled by `docsync` is a Mintlify MDX file: a block of YAML **frontmatter** followed by the MDX **body**. Before any page is accepted into a PR, it must pass a battery of validation gates implemented in `docsync/src/docsync/validate.py`. This reference describes the format those gates require and the exact rules each gate enforces.
+
+<Note>
+Two validation entry points exist, because the format is checked differently depending on whether a page is being **edited** or **created from scratch**. Both are documented below.
+</Note>
+
+## Page anatomy
+
+Every page is split into two parts by the adapter's `split_frontmatter()`:
+
+| Part | Description |
+|------|-------------|
+| Frontmatter | A YAML metadata block. Must parse, and on a from-scratch page must carry non-empty `title` and `description`. |
+| Body | The MDX content — Markdown plus Mintlify components and fenced code blocks. |
+
+The set of frontmatter keys that are treated as significant is returned by the adapter's `frontmatter_keys_to_freeze()`. These are the **frozen keys**: on an edit they may not change, and on a new page they must be present and non-empty.
+
+<Warning>
+The frontmatter block must remain parseable after any edit. If `split_frontmatter()` raises while parsing either the original or the new text, the page is failed outright with `frontmatter no longer parses` (edit) or `frontmatter does not parse` (new page).
+</Warning>
+
+## Validation entry points
+
+<CardGroup cols={2}>
+  <Card title="validate_page" icon="pen-to-square">
+    Validates an **edit** by diffing `original_text` against `new_text`. Runs the diff-based gates: frontmatter freeze, structural signature, diff-size, and truncation ratio.
+  </Card>
+  <Card title="validate_new_page" icon="file-plus">
+    Validates a **from-scratch** page with absolute gates (no original to diff against): complete frontmatter, well-formedness, even fences, and minimum length.
+  </Card>
+</CardGroup>
+
+### `validate_page`
+
+```python
+def validate_page(
+    page_path: str,
+    original_text: str,
+    new_text: str,
+    manifest_page: ManifestPage | None,
+    adapter: DocAdapter,
+    *,
+    check_links: bool = False,
+    docs_root: Path | None = None,
+) -> ValidationResult:
+```
+
+Runs all gates comparing `original_text` → `new_text` and returns a `ValidationResult`. `passed` is `True` only when there are zero hard-gate failures.
+
+| Parameter | Type | Purpose |
+|-----------|------|---------|
+| `page_path` | `str` | Identifier of the page, echoed back on the result. |
+| `original_text` | `str` | The page contents before the edit. |
+| `new_text` | `str` | The candidate rewrite. |
+| `manifest_page` | `ManifestPage \| None` | Manifest entry; controls `allow_frontmatter_edit` and the diff-size budget. |
+| `adapter` | `DocAdapter` | The framework adapter (Mintlify) that knows how to split frontmatter and compute structural signatures. |
+| `check_links` | `bool` (kw-only) | Enables the soft broken-link gate. |
+| `docs_root` | `Path \| None` (kw-only) | Root used to resolve links; required for the link gate to run. |
+
+The hard gates run in order:
+
+<Steps>
+  <Step title="Frontmatter freeze">
+    `_check_frontmatter` — frozen keys must be unchanged unless the manifest opts in; frontmatter must still parse.
+  </Step>
+  <Step title="Component / mermaid / fence integrity">
+    `_check_structure` — structural signatures must be identical; fence count must be even.
+  </Step>
+  <Step title="Well-formedness">
+    `_check_wellformed` — components must be balanced and correctly nested.
+  </Step>
+  <Step title="Diff-size guardrail">
+    `_check_diff_size` — net changed lines must stay within the manifest budget.
+  </Step>
+  <Step title="Not truncated">
+    `_check_not_truncated` — the new text must exist and not be drastically shorter than the original.
+  </Step>
+</Steps>
+
+### `validate_new_page`
+
+```python
+def validate_new_page(
+    page_path: str,
+    new_text: str,
+    adapter: DocAdapter,
+    *,
+    check_links: bool = False,
+    docs_root: Path | None = None,
+) -> ValidationResult:
+```
+
+Validates a bootstrap (from-scratch) page with **absolute** gates. The diff-based gates do not apply because there is no original to compare against. Its hard gates are:
+
+1. `_check_frontmatter_complete` — frontmatter parses **and** every frozen key (`title`, `description`) is present and non-empty.
+2. `_check_wellformed` — components are balanced and correctly nested.
+3. `_check_even_fences` — the count of <code>```</code> markers is even.
+4. `_check_min_length` — non-empty and at least `_NEW_PAGE_MIN_CHARS` characters long.
+
+## Gate reference
+
+### `_check_frontmatter` — frozen-key freeze (edit)
+
+Splits frontmatter from both the original and new text. If either fails to parse, returns a single failure `frontmatter no longer parses: …`.
+
+When `manifest_page.allow_frontmatter_edit` is truthy, the gate returns immediately with no failures. Otherwise it compares each frozen key; any change emits:
+
+```text
+frozen frontmatter key 'title' changed: 'Old' -> 'New'
+```
+
+### `_check_frontmatter_complete` — required keys (new page)
+
+Parses the frontmatter and, for each key in `frontmatter_keys_to_freeze()`, requires a non-empty string value. A missing or blank value emits `missing or empty frontmatter 'title'`. A parse error emits `frontmatter does not parse: …`.
+
+### `_check_structure` — structural signature (edit)
+
+Compares the `structural_signature()` of the original and new text key-by-key (over the union of both signatures' keys). The signature captures component/mermaid counts and the `fence_count`; any divergence is a failure, ensuring an edit cannot add, drop, or reshape structural elements.
+
+### `_check_even_fences` — balanced code fences (new page)
+
+Reads `fence_count` from the structural signature. An odd count means an unterminated code fence:
+
+```text
+unbalanced code fences: 3 ``` markers (must be even)
+```
+
+### `_check_min_length` — stub guard (new page)
+
+Empty content fails with `new content is empty`. Content shorter than `_NEW_PAGE_MIN_CHARS` fails as a suspected stub.
+
+## Thresholds
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `_TRUNCATION_MIN_RATIO` | `0.5` | A rewrite dropping below this fraction of the original character length is treated as truncated/botched rather than a legitimate trim. |
+| `_NEW_PAGE_MIN_CHARS` | `200` | A from-scratch page below this many characters is treated as a stub / failed generation. |
+
+## Hard gates vs. soft gates
+
+<Tabs>
+  <Tab title="Hard gates">
+    Any failure sets `passed=False` and drops the page. These protect against the failure modes an LLM edit introduces: clobbered frontmatter, unbalanced or reshaped MDX components, a runaway diff, or a truncated rewrite.
+  </Tab>
+  <Tab title="Soft gates">
+    Broken-link findings, produced by `_check_links_soft` when both `check_links=True` and `docs_root` are supplied. These append to `ValidationResult.warnings`, leave `passed` unchanged, and annotate the PR instead of blocking it — a single patched page may legitimately reference pages not yet written.
+  </Tab>
+</Tabs>
+
+## Adapter resolution
+
+```python
+def get_adapter(page_path: str) -> DocAdapter:
+```
+
+Returns the adapter that owns `page_path`. The MVP registry holds a single `MintlifyAdapter`; if it does not own the page, a `ValueError` is raised. Callers treat that error as "no adapter — drop the page" rather than silently skipping it.
+
+## `ValidationResult`
+
+Both entry points return a `ValidationResult` with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `page_path` | `str` | The page that was validated. |
+| `passed` | `bool` | `True` when `failures` is empty (`len(failures) == 0`). |
+| `failures` | `list[str]` | Human-readable hard-gate failure messages. |
+| `warnings` | `list[str]` | Soft-gate findings (e.g. broken links); do not affect `passed`. |
+
+<Note>
+Because `passed` depends only on `failures`, a page can pass while still carrying warnings. Surface warnings in the PR so reviewers see soft findings such as not-yet-written link targets.
+</Note>

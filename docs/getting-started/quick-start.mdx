@@ -1,0 +1,226 @@
+---
+title: Quick Start
+description: Set up docsync, scaffold a documentation site, anchor your pages to source code, and open your first docs-sync PR in about 10 minutes.
+---
+
+docsync keeps your documentation in sync with code changes. Given a code diff, it maps the change to the doc pages that describe it, drafts edits, validates them, and either opens a docs PR or writes a patch plus a report. This guide takes you from an empty docs repo to your first run.
+
+<CardGroup cols={2}>
+  <Card title="Scaffold" icon="folder-tree">
+    `docsync init` writes a minimal, valid `.docsync/` skeleton so you don't hand-author config and manifest from scratch.
+  </Card>
+  <Card title="Anchor" icon="anchor">
+    The manifest maps each doc page to the source globs and symbols it documents — these anchors drive impact mapping.
+  </Card>
+  <Card title="Validate" icon="stethoscope">
+    `docsync doctor` re-resolves the manifest against real checkouts and reports drift before any LLM spend.
+  </Card>
+  <Card title="Run" icon="play">
+    `docsync run` computes impact, drafts edits, validates, and reports — dry-run by default.
+  </Card>
+</CardGroup>
+
+## Before you start
+
+<Note>
+  docsync calls an LLM for its judge and edit stages, so pick a backend first:
+
+  - **`api`** (default) — uses the Anthropic API. Set `ANTHROPIC_API_KEY` in your environment.
+  - **`claude-code`** — reuses your local Claude Code CLI authentication, so no API key is required. Handy for local development.
+
+  Select the backend per run with `--backend api` or `--backend claude-code`.
+</Note>
+
+Make sure the `docsync` CLI is available on your PATH. It is a Typer-based command line tool with three top-level commands:
+
+| Command | What it does |
+| --- | --- |
+| `docsync run` | Full pipeline: diff → impact → edits → validate → (PR \| patch + report). |
+| `docsync map` | Impact mapping only (no LLM edits) — a cheap, dry inspection. |
+| `docsync index` | Build or refresh the embeddings index (optional recall-net). |
+
+Two onboarding helpers sit in front of the pipeline:
+
+| Command | What it does |
+| --- | --- |
+| `docsync init` | Scaffold a starter `.docsync/` skeleton in your docs repo. |
+| `docsync doctor` | Validate the manifest still resolves against real source checkouts. |
+
+## Set up your docs repo
+
+<Steps>
+  <Step title="Scaffold the .docsync/ skeleton">
+    From your documentation repository, run `docsync init`. This calls `init_docs_repo`, which writes three artifacts:
+
+    - `.docsync/config.yml` — seeded from the real model defaults (never hardcoded ids).
+    - `.docsync/manifest.yml` — a commented template with one illustrative page entry.
+    - `.docsync/state/cursors.json` — initialized to `{}`.
+
+    Existing files are left untouched. Pass `--force` to overwrite the three artifacts if they already exist. Only files actually written are reported back.
+
+    The generated `config.yml` looks like this:
+
+    ```yaml .docsync/config.yml
+    # docsync config — see DocsyncConfig in models.py for all options.
+    models:
+      edit_model: <default edit model>
+      judge_model: <default judge model>
+      edit_effort: <default edit effort>
+    # Root of the docs tree, relative to this repo (where page paths resolve).
+    docs_root: "."
+    # GitHub handles requested as reviewers on opened doc-update PRs.
+    reviewers: []
+    # Labels applied to opened docs PRs (auto-created in this repo if missing).
+    pr_labels: [docsync]
+    # Ship-safety: skip the edit stage for pages below this impact confidence
+    # (0-1). 0 = off. Raise (e.g. 0.7) for a conservative first rollout.
+    min_edit_confidence: 0.0
+    # Max concurrent LLM requests across the judge + edit stages.
+    max_parallel_requests: 4
+    # Cap on pages edited per run (0 = unlimited); highest-confidence first.
+    max_pages_per_run: 0
+    ```
+
+    <Note>
+      Model ids and effort are filled in from `DocsyncConfig` defaults at scaffold time, so they always reflect the version of docsync you're running.
+    </Note>
+  </Step>
+
+  <Step title="Anchor your first page in the manifest">
+    The manifest maps each doc page to the source code it documents. The scaffolded `manifest.yml` ships with a placeholder example that is intentionally invalid so that `docsync doctor` flags it until you edit it to real values:
+
+    ```yaml .docsync/manifest.yml
+    # docsync manifest — maps each doc page to the source code it documents.
+    pages:
+      - path: example-page.mdx          # page path, relative to docs_root
+        sources:
+          - repo: owner/your-service    # matches the source repo (owner/name)
+            globs:                      # fnmatch globs over changed file paths
+              - "src/routes/*.py"
+            symbols:                    # symbol names (trailing * = prefix)
+              - get_app
+        max_diff_lines: 60              # per-page net-changed-lines guardrail
+    ```
+
+    Edit the entry so that:
+
+    - `path` points at a real page that exists under `docs_root`.
+    - `repo` matches the source repo by `owner/name` (a bare `name` checkout also reconciles via the same key normalization mapping uses).
+    - `globs` are `fnmatch` globs over changed file paths.
+    - `symbols` are symbol names; a trailing `*` matches by prefix.
+
+    `max_diff_lines` is a per-page guardrail on net changed lines.
+  </Step>
+
+  <Step title="Validate the manifest with doctor">
+    Run `docsync doctor` to re-resolve the manifest against real source checkouts. It reports four kinds of drift:
+
+    - **Missing pages** — a manifest `path` that doesn't exist under `docs_root`.
+    - **Dead globs** — a glob that no longer matches any file in its checkout.
+    - **Missing symbols** — a declared symbol not found textually in any glob-matched file.
+    - **Unmapped repos** — a source whose repo has no provided checkout.
+
+    The report's `ok` is `True` only when there are no *hard* issues — missing pages or dead globs. Missing symbols are warnings: symbol-only drift degrades anchor recall but doesn't by itself break mapping, so it doesn't flip `ok`.
+
+    <Warning>
+      Fix doctor's hard issues before you run the pipeline. A manifest page that no longer exists silently disables its anchor, so a missed doc update reads as "no drift." `docsync run` pre-flights this same check (see below) and aborts before any LLM spend if a referenced page is missing.
+    </Warning>
+  </Step>
+</Steps>
+
+## Make your first run
+
+By default, `docsync run` is a **dry run**: it computes impact and writes a report, but does not modify pages or open a PR. Start there to see what it would change.
+
+<Steps>
+  <Step title="Dry run against a local code change">
+    Point docsync at your docs repo checkout and at the service repo's diff. `--src-repo` accepts either a local path (an existing checkout with a `.git`) or a GitHub `owner/name`:
+
+    <Tabs>
+      <Tab title="API backend">
+        ```bash
+        export ANTHROPIC_API_KEY=sk-ant-...
+
+        docsync run \
+          --docs-repo ./docs \
+          --src-repo ./my-service \
+          --base main \
+          --head HEAD \
+          --backend api
+        ```
+      </Tab>
+      <Tab title="Claude Code backend">
+        ```bash
+        docsync run \
+          --docs-repo ./docs \
+          --src-repo owner/my-service \
+          --base main \
+          --head HEAD \
+          --backend claude-code
+        ```
+      </Tab>
+    </Tabs>
+
+    The pre-flight gate (the manifest doctor) runs first and aborts with a non-zero exit if the manifest references missing pages. Pass `--no-preflight` to bypass it.
+
+    If the same `repo@head` has already been processed, docsync skips it (the run cursor). And if the diff produces no validated changes, there's nothing to open and the run exits cleanly.
+  </Step>
+
+  <Step title="Read the report and the patch">
+    On a dry run, docsync prints a console summary and — when there are validated changes — writes a `docsync.patch` to the docs repo so you can inspect the proposed edits without committing them. To capture the PR-body markdown to a file, add `--report-path report.md`.
+
+    ```bash
+    docsync run \
+      --docs-repo ./docs \
+      --src-repo ./my-service \
+      --base main --head HEAD \
+      --report-path report.md
+    ```
+  </Step>
+
+  <Step title="Apply the changes or open a PR">
+    When the dry-run output looks right, apply it. `--no-dry-run` writes the validated pages in place; `--open-pr` branches, commits, pushes, and opens a docs PR using the `reviewers` and `pr_labels` from your config:
+
+    ```bash
+    docsync run \
+      --docs-repo ./docs \
+      --src-repo ./my-service \
+      --base main --head HEAD \
+      --open-pr
+    ```
+
+    After a successful write, docsync advances the run cursor so the same commit isn't reprocessed.
+  </Step>
+</Steps>
+
+## Useful run flags
+
+<CardGroup cols={2}>
+  <Card title="--from-event" icon="github">
+    Derive repo / base / head / PR automatically from a GitHub event JSON. Auto-detected from `$GITHUB_EVENT_PATH` in CI, so no flags are needed there.
+  </Card>
+  <Card title="--use-embeddings" icon="magnifying-glass">
+    On by default: an embeddings recall-net surfaces drift on pages the manifest doesn't anchor. Degrades to anchors-only if the embeddings extra isn't installed.
+  </Card>
+  <Card title="--self-critique" icon="scale-balanced">
+    Adversarially re-check each generated edit against the diff (a judge-model call per page) and drop edits the change doesn't justify.
+  </Card>
+  <Card title="--min-confidence / --max-pages" icon="sliders">
+    Skip the edit stage below an impact-confidence threshold, or cap the number of edited pages (highest-confidence first). Both override the matching config values — ideal for a conservative first rollout.
+  </Card>
+</CardGroup>
+
+<Note>
+  Running in CI? You usually don't pass `--src-repo`/`--base`/`--head` at all — with `$GITHUB_EVENT_PATH` set, docsync resolves the repo, base, head, and PR from the event JSON. The diff source precedence is: explicit `--from-event` > explicit flags > `$GITHUB_EVENT_PATH`.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Inspect impact only" icon="route">
+    Run `docsync map` to see which pages a change would touch — no LLM edits, no cost.
+  </Card>
+  <Card title="Build the recall-net" icon="layer-group">
+    Run `docsync index` to build or refresh the embeddings index that powers `--use-embeddings`.
+  </Card>
+</CardGroup>

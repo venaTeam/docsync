@@ -1,0 +1,207 @@
+---
+title: "Installation & Setup"
+description: "Install docsync, scaffold a .docsync/ directory in your docs repo, and initialize your first documentation-to-source mapping."
+---
+
+docsync keeps your documentation in sync with code changes. It lives in your **docs repository** as a `.docsync/` directory that maps each documentation page to the source code it describes, then runs a diff → impact → edit → validate pipeline to propose doc updates when that code changes.
+
+This guide walks you through installing the CLI, scaffolding a starter `.docsync/` skeleton with `docsync init`, and confirming your configuration loads.
+
+<CardGroup cols={2}>
+  <Card title="Scaffold a project" icon="folder-plus">
+    `docsync init` writes a valid `config.yml`, a commented `manifest.yml` template, and `state/cursors.json`.
+  </Card>
+  <Card title="Map pages to code" icon="link">
+    The manifest's anchors (repo + globs + symbols) drive impact mapping for the update pipeline.
+  </Card>
+</CardGroup>
+
+## What you'll set up
+
+Everything docsync needs lives inside your docs repo under `.docsync/`:
+
+```
+.docsync/
+  config.yml          # DocsyncConfig (models, thresholds, reviewers)
+  manifest.yml        # Manifest (page <-> source mapping) — the heart of mapping
+  state/cursors.json  # last processed head_sha per source repo (idempotency)
+```
+
+<Note>
+  `config.yml` is optional — if it's absent, docsync falls back to built-in defaults. `manifest.yml` is **required**: a docsync-enabled docs repo needs it to map pages to their source code.
+</Note>
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Python + the docsync package" icon="python">
+    Install the `docsync` package so the CLI (`docsync ...`) is on your PATH.
+  </Card>
+  <Card title="A docs repository" icon="book">
+    A repo holding your Mintlify pages (for example, a developer-docs repo) that you'll scaffold `.docsync/` into.
+  </Card>
+</CardGroup>
+
+An LLM backend is only needed later, when you run the full pipeline (`docsync run`):
+
+- **`api`** — uses `ANTHROPIC_API_KEY`.
+- **`claude-code`** — reuses your local Claude Code CLI auth, no API key (handy for dev).
+
+## Setup
+
+<Steps>
+  <Step title="Install the CLI">
+    Install the package, then confirm the command is available:
+
+    ```bash
+    docsync --help
+    ```
+
+    You should see the top-level help: "Keep documentation in sync with code changes." The core subcommands are `run`, `map`, and `index`, plus the onboarding commands `init` and `doctor`.
+  </Step>
+
+  <Step title="Scaffold .docsync/ with docsync init">
+    From the root of your **docs repository**, scaffold a minimal, valid skeleton:
+
+    ```bash
+    docsync init
+    ```
+
+    This calls `init_docs_repo`, which writes three artifacts:
+
+    - `config.yml` — seeded from the real model defaults (model ids are never hardcoded).
+    - `manifest.yml` — a commented template with one illustrative example page.
+    - `state/cursors.json` — initialized to `{}`.
+
+    Existing files are left untouched, so re-running `init` is safe; only files actually written are reported.
+
+    <Warning>
+      The scaffolded `manifest.yml` is deliberately a placeholder — its example points at a non-existent repo and page, so `docsync doctor` will flag it until you edit it to real values. This is expected on a fresh project.
+    </Warning>
+  </Step>
+
+  <Step title="Map your first page to source code">
+    Open `.docsync/manifest.yml` and replace the `EXAMPLE` entry with a real page. Each page maps a doc `path` (relative to `docs_root`) to one or more `sources`, where a source is a repo plus `globs` and `symbols` that anchor the page to specific code:
+
+    ```yaml
+    pages:
+      - path: example-page.mdx          # page path, relative to docs_root
+        sources:
+          - repo: owner/your-service    # matches the source repo (owner/name)
+            globs:                      # fnmatch globs over changed file paths
+              - "src/routes/*.py"
+            symbols:                    # symbol names (trailing * = prefix)
+              - get_app
+        max_diff_lines: 60              # per-page net-changed-lines guardrail
+    ```
+
+    Set `path` to a real page under your `docs_root`, and each source's `repo`/`globs`/`symbols` to the code that page describes. These anchors are what impact mapping matches changed files against.
+  </Step>
+
+  <Step title="Review config.yml">
+    The scaffolded `config.yml` is seeded from `DocsyncConfig` defaults. Adjust the knobs that matter for your rollout:
+
+    ```yaml
+    models:
+      edit_model: ...
+      judge_model: ...
+      edit_effort: ...
+    docs_root: "."          # root of the docs tree, where page paths resolve
+    reviewers: []           # GitHub handles requested on opened doc-update PRs
+    pr_labels: [docsync]    # labels applied to opened docs PRs
+    min_edit_confidence: 0.0   # skip edits below this impact confidence (0 = off)
+    max_parallel_requests: 4   # max concurrent LLM requests (judge + edit)
+    max_pages_per_run: 0       # cap on pages edited per run (0 = unlimited)
+    ```
+
+    <Note>
+      For a conservative first rollout, raise `min_edit_confidence` (e.g. `0.7`) so only high-confidence pages reach the edit stage. The same value can be overridden per-run with `--min-confidence`.
+    </Note>
+  </Step>
+
+  <Step title="Validate the manifest with doctor">
+    Once you've edited the manifest, check that its anchors still resolve against real source checkouts:
+
+    ```bash
+    docsync doctor
+    ```
+
+    `doctor` re-resolves the manifest and reports drift. Two issue classes are **hard** failures (they flip the report's `ok` to false): missing doc pages and dead globs (a glob that matches no file in its checkout). Missing symbols are reported as **warnings** only — symbol drift degrades anchor recall but doesn't by itself break mapping.
+  </Step>
+</Steps>
+
+## Confirm your config loads
+
+docsync reads your configuration through `load_config`, which loads `.docsync/config.yml` and returns built-in defaults if the file is absent. The pipeline calls this, together with `load_manifest`, before doing any work:
+
+```python
+from pathlib import Path
+from docsync import config as cfg
+
+docs_repo = Path(".")
+config = cfg.load_config(docs_repo)     # DocsyncConfig (defaults if config.yml is missing)
+manifest = cfg.load_manifest(docs_repo) # raises FileNotFoundError if manifest.yml is missing
+```
+
+<Warning>
+  `load_manifest` raises `FileNotFoundError` when `.docsync/manifest.yml` is missing — the manifest is mandatory. If you skipped `docsync init`, run it (or author the manifest by hand) before running the pipeline.
+</Warning>
+
+## Make a first call
+
+With `.docsync/` in place, inspect impact without spending anything on the LLM. Start with a dry inspection, then a dry run.
+
+<Tabs>
+  <Tab title="Impact mapping (cheapest)">
+    `docsync map` performs impact mapping only — no LLM edits — so it's the cheapest way to see which pages a change touches:
+
+    ```bash
+    docsync map --src-repo owner/your-service --base <before-sha> --head <after-sha>
+    ```
+  </Tab>
+
+  <Tab title="Dry run">
+    `docsync run` is the full pipeline (diff → impact → edits → validate → report). It is **dry-run by default**: it computes and reports, but does not write files or open a PR.
+
+    ```bash
+    docsync run \
+      --docs-repo . \
+      --src-repo owner/your-service \
+      --base <before-sha> \
+      --head <after-sha>
+    ```
+
+    To apply changes, pass `--no-dry-run` (write a patch + report) or `--open-pr` (branch, commit, push, and open a docs PR).
+  </Tab>
+
+  <Tab title="In CI">
+    In CI, the GitHub event JSON is the only thing wired up, so repo/base/head/PR are derived automatically from `$GITHUB_EVENT_PATH` — no flags needed:
+
+    ```bash
+    docsync run --docs-repo .
+    ```
+
+    You can also point at an event file explicitly with `--from-event <path>`.
+  </Tab>
+</Tabs>
+
+<Note>
+  Before any LLM spend, `docsync run` runs a **preflight** (doctor) gate. If the manifest references a doc page that no longer exists, the run aborts with a clear error — fix `.docsync/manifest.yml` (or restore the page), or bypass with `--no-preflight`. Runs are also idempotent: a `head_sha` already recorded in `state/cursors.json` for a repo is skipped.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Refine your manifest" icon="map">
+    Add more pages and tune each source's `globs` and `symbols`, then re-run `docsync doctor` to keep anchors honest.
+  </Card>
+  <Card title="Build the embeddings index" icon="layer-group">
+    `docsync index` builds an optional recall-net that surfaces drift on pages the manifest doesn't anchor.
+  </Card>
+  <Card title="Open a docs PR" icon="code-pull-request">
+    Re-run with `--open-pr` to branch, commit, and open a doc-update PR with your configured reviewers and labels.
+  </Card>
+  <Card title="Wire up CI" icon="robot">
+    Run `docsync run --docs-repo .` in CI so doc updates are triggered automatically by source commits.
+  </Card>
+</CardGroup>

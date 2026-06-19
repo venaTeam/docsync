@@ -1,0 +1,264 @@
+---
+title: Critique and Evaluation Rules
+description: Reference for docsync's adversarial self-critique verdicts and the regression-eval harness — verdict types, golden cases, scoring metrics, and the prompts and quality thresholds applied during assessment.
+---
+
+docsync applies two layers of automated assessment to its generated documentation edits:
+
+<CardGroup cols={2}>
+  <Card title="Stage 4.5 — Critique" icon="gavel">
+    An adversarial self-critique gate (`critique.py`). A cheap second LLM call
+    judges whether each proposed edit op faithfully reflects the code diff and
+    drops the ones that do not.
+  </Card>
+  <Card title="Regression Eval" icon="ruler">
+    A page-level accuracy harness (`eval.py`). Runs docsync over a labeled
+    golden set of real PRs and scores precision / recall / F1 against the
+    expected pages.
+  </Card>
+</CardGroup>
+
+## Critique verdicts
+
+### `CritiqueVerdict`
+
+The judge's flat verdict over a proposed `PageEdit`. The contract is
+intentionally flat so the structured-output backend has nothing nested to
+validate.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `faithful` | `bool` | — | `True` iff every kept op is justified by the diff — i.e. nothing left to reject. |
+| `rejected_finds` | `list[str]` | `[]` | The exact `find` strings of the ops the judge wants dropped. |
+| `reason` | `str` | `""` | A short, human-readable explanation of the call. |
+
+<Note>
+`faithful` is true **only when** `rejected_finds` is empty. The two fields are
+coupled by definition — a non-empty `rejected_finds` always means
+`faithful == false`.
+</Note>
+
+### Faithfulness criteria
+
+The judge evaluates a single dimension — **faithfulness to the diff** — and
+explicitly ignores writing quality, style, and whether the docs could be
+better. The rules it applies:
+
+<Steps>
+  <Step title="Keep ops grounded in the diff">
+    KEEP an op if it reflects something the diff actually changed. An op that
+    merely **adds** undocumented-but-correct information about a real diff
+    change is acceptable and must be kept.
+  </Step>
+  <Step title="Reject only out-of-scope ops">
+    REJECT an op only if it concerns something the diff did **not** change — a
+    hallucinated symbol, an unrelated section, or an over-reaching rewrite of
+    content the diff never touched.
+  </Step>
+  <Step title="Record exact find strings">
+    Put the exact `find` string of every rejected op into `rejected_finds`, set
+    `faithful` to true iff that list is empty, and provide a concise `reason`.
+  </Step>
+</Steps>
+
+### Judge configuration
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `_JUDGE_MODEL` | `"claude-haiku-4-5"` | Default judge model — the cheap second-opinion (Haiku) model. |
+| `_MAX_TOKENS` | `2000` | Max tokens for the parse call; the verdict is tiny, so a small budget keeps the call cheap and non-streaming. |
+
+## Building the critique prompt
+
+### `build_critique_prompt(diff, page_path, page_edit) -> str`
+
+Builds the user message for the critique call. Split out from
+`critique_page_edit` so prompt content is unit-testable without a client.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `diff` | `CodeDiff` | The code change being documented. |
+| `page_path` | `str` | The documentation page under review. |
+| `page_edit` | `PageEdit` | The proposed edit ops to be judged. |
+
+The assembled message contains the diff's changed paths, changed symbols, and
+rendered hunks, followed by every proposed edit op (`find` / `replace` /
+`rationale`), and closes with the instruction to list the `find` string of
+every unjustified op in `rejected_finds`.
+
+<Note>
+When `page_edit.edits` is empty, the ops section renders the literal placeholder
+`(no edit ops proposed)`. Empty `changed_paths()` / `all_symbols()` render as
+`(none)`.
+</Note>
+
+### `critique_page_edit(client, *, diff, page_path, page_edit, model=None, system_extra="") -> CritiqueVerdict`
+
+Asks the judge model whether each edit op is faithful to `diff`. Mirrors the
+`messages.parse(...)` idiom from `edits.py`: a cached invariant system prefix
+plus a per-page user message, returning the SDK's `.parsed_output` (a
+`CritiqueVerdict`).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `client` | — | — | Anthropic-style client; injectable with a fake for tests. |
+| `diff` | `CodeDiff` | — | The motivating code change. |
+| `page_path` | `str` | — | The page being judged. |
+| `page_edit` | `PageEdit` | — | The proposed edits. |
+| `model` | `str \| None` | `None` | Overrides the default Haiku judge model. |
+| `system_extra` | `str` | `""` | If given, appended to the cached system prefix. |
+
+The call is wrapped in `cost.stage("critique")` for accounting. The invariant
+system prefix is sent with `cache_control: {"type": "ephemeral"}` so the
+critique invariants stay cached across pages.
+
+```python
+verdict = critique_page_edit(
+    client,
+    diff=diff,
+    page_path="reference/alerts.mdx",
+    page_edit=proposed,
+)
+if not verdict.faithful:
+    proposed = apply_critique(proposed, verdict)
+```
+
+## Applying the verdict
+
+### `apply_critique(page_edit, verdict) -> PageEdit`
+
+A pure helper that returns a **new** `PageEdit` with the verdict's
+`rejected_finds` ops removed. Ops are matched on their exact `find` string and
+kept in their original order. The input is not mutated.
+
+<Warning>
+If every op is rejected, the returned `PageEdit` has an empty `edits` list — the
+pipeline then treats the page as **no-change**. The `no_change_reason` from the
+input is preserved.
+</Warning>
+
+## Evaluation harness
+
+The eval harness turns docsync's page-level accuracy into a single reproducible
+number, guarding against regressions.
+
+### Evaluation modes
+
+<Tabs>
+  <Tab title='mode="map"'>
+    **Free — no LLM.** Actual pages are the unique `page_path` values from
+    `find_anchor_candidates` (and, with `use_embeddings`, also
+    `find_embedding_candidates`). Measures the recall-oriented **mapping** stage.
+  </Tab>
+  <Tab title='mode="full"'>
+    **LLM path — requires a `client`.** Runs the full edit pipeline
+    (`pipeline.run`) and takes the pages it actually *edits*
+    (`PipelineResult.changed()`). Measures end-to-end **edit** precision.
+  </Tab>
+</Tabs>
+
+<Note>
+`expected_pages` in a golden case are **edit-stage** expectations: the pages
+docsync should actually *edit*. Some cases legitimately map (anchor) a page
+without editing it, so `mode="map"` is *expected* to over-select on those cases,
+lowering map-mode precision. That gap between mapping recall and edit precision
+is the documented, intended behavior of the two-stage design — not a bug.
+</Note>
+
+### `GoldenCase`
+
+One labeled real PR in the golden set.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `repo` | `str` | — | Canonical `owner/name` (the matcher normalizes forks). |
+| `base` | `str` | — | Base ref/sha of the compare. |
+| `head` | `str` | — | Head ref/sha of the compare. |
+| `label` | `str` | — | Human-readable description of what the PR does. |
+| `expected_pages` | `list[str]` | `[]` | Edit-stage expectations — the pages docsync should edit. |
+
+### `CaseResult`
+
+Per-case scoring outcome with page-level confusion counts.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `label` | `str` | — | The case label. |
+| `repo` | `str` | — | The case repo. |
+| `expected` | `list[str]` | `[]` | Expected pages. |
+| `actual` | `list[str]` | `[]` | Pages docsync produced. |
+| `tp` | `int` | `0` | Pages in both expected and actual. |
+| `fp` | `int` | `0` | Pages in actual but not expected. |
+| `fn` | `int` | `0` | Pages in expected but not actual. |
+
+### `EvalReport`
+
+Aggregate report over a golden set: per-case results plus micro-averaged scores.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cases` | `list[CaseResult]` | `[]` | Per-case results. |
+| `precision` | `float` | `0.0` | Micro-averaged precision. |
+| `recall` | `float` | `0.0` | Micro-averaged recall. |
+| `f1` | `float` | `0.0` | Micro-averaged F1. |
+| `n_cases` | `int` | `0` | Number of cases scored. |
+| `usage` | `Optional[RunUsage]` | `None` | Accumulated LLM cost (`mode="full"` only). |
+
+## Scoring functions
+
+### `score_case(expected, actual) -> tuple[int, int, int]`
+
+Scores one case at the page level, returning `(tp, fp, fn)`. Pure — depends only
+on the two page sets.
+
+| Count | Formula |
+|-------|---------|
+| `tp` | `len(expected & actual)` |
+| `fp` | `len(actual - expected)` |
+| `fn` | `len(expected - actual)` |
+
+### `aggregate(results) -> tuple[float, float, float]`
+
+Returns micro-averaged `(precision, recall, f1)` over summed `tp`/`fp`/`fn`.
+Micro-averaging sums the confusion counts across all cases first, then computes
+the rates once — so larger cases contribute proportionally more. Pure.
+
+| Metric | Formula | Zero guard |
+|--------|---------|------------|
+| precision | `tp / (tp + fp)` | `0.0` when `tp + fp == 0` |
+| recall | `tp / (tp + fn)` | `0.0` when `tp + fn == 0` |
+| f1 | `2 · precision · recall / (precision + recall)` | `0.0` when `precision + recall == 0` |
+
+## Loading and running
+
+### `load_golden(path) -> list[GoldenCase]`
+
+Loads a golden set from a JSON file into `GoldenCase` models. Accepts either a
+top-level list `[ {...}, ... ]` or an object with a `"cases"` key
+`{"cases": [ {...}, ... ]}`.
+
+### `run_eval(cases, docs_repo, config, manifest, *, mode="map", use_embeddings=False, client=None, diff_fn=None) -> EvalReport`
+
+Runs every golden case and scores it, returning the aggregate `EvalReport`.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `cases` | `list[GoldenCase]` | — | The golden set to evaluate. |
+| `docs_repo` | `Path` | — | Root of the docs repo. |
+| `config` | `DocsyncConfig` | — | docsync configuration. |
+| `manifest` | `Manifest` | — | The page ↔ source mapping. |
+| `mode` | `str` | `"map"` | `"map"` (free) or `"full"` (LLM pipeline). |
+| `use_embeddings` | `bool` | `False` | Also include the full-tree embedding recall-net. |
+| `client` | — | `None` | Anthropic client; required for `mode="full"`. |
+| `diff_fn` | `Optional[DiffFn]` | `None` | Diff builder `(repo, base, head) -> CodeDiff`; defaults to `docsync.diff.diff_github`. Injectable so tests stay offline. |
+
+For each case the diff is built via `diff_fn(repo, base, head)`, then actual
+pages are computed per the selected mode. A failure while processing one case is
+caught and recorded as a case with `actual=[]` (and a note appended), so a
+single broken case does not abort the run.
+
+<Note>
+`DiffFn` is the injectable diff-builder type alias:
+`Callable[[str, str, str], CodeDiff]`. It defaults to the real GitHub path in
+`run_eval`, but tests pass a fake to avoid the network.
+</Note>

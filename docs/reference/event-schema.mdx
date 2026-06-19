@@ -1,0 +1,268 @@
+---
+title: Event Schema and Webhooks
+description: Complete schema, field reference, and examples for the GitHub event payloads docsync ingests, the models they produce, and the functions that parse them into a CodeDiff.
+---
+
+docsync's CI entry point is **event-native**: instead of requiring the caller to pass `--src-repo/--base/--head/--pr-number/--pr-title` flags, it derives every diff parameter from the GitHub event JSON that GitHub writes to `$GITHUB_EVENT_PATH`. This serves the project's core goal — *triggered by commits, not many parameters*.
+
+This page documents the event ingestion module (`docsync.events`) and the data contracts it produces (`docsync.models`): the event shapes understood, the functions that parse them, and the schema of every model exchanged across the pipeline.
+
+<CardGroup cols={2}>
+  <Card title="Two event shapes" icon="code-branch">
+    `repository_dispatch` (explicit `client_payload`) and native `push` (`before`/`after`).
+  </Card>
+  <Card title="Network-free parsing" icon="plug">
+    `parse_event` is pure; `diff_from_event` delegates the actual diffing to `diff_github`, so the module is fully testable.
+  </Card>
+  <Card title="Null-base fallback" icon="rotate-left">
+    A branch's first push has no prior commit — docsync compares against `<head>^` instead of the empty tree.
+  </Card>
+  <Card title="Structured output" icon="table">
+    Events resolve to a `CodeDiff` of `ChangedFile`s — the single seam every downstream stage builds against.
+  </Card>
+</CardGroup>
+
+## Event ingestion pipeline
+
+<Steps>
+  <Step title="Read the event file">
+    `load_event($GITHUB_EVENT_PATH)` reads and JSON-parses the triggering event GitHub wrote to disk.
+  </Step>
+  <Step title="Parse the parameters">
+    `parse_event(event)` extracts the comparison parameters into an `EventInfo` (pure, no I/O).
+  </Step>
+  <Step title="Apply the null-base fallback">
+    If the recovered base is git's all-zeros null SHA, it is rewritten to `<head>^`.
+  </Step>
+  <Step title="Delegate to the differ">
+    `diff_from_event` calls `diff_github(repo, base, head, pr_number=…, pr_title=…)`, returning a `CodeDiff`.
+  </Step>
+</Steps>
+
+## Supported event shapes
+
+`parse_event` recognizes two shapes, tried in this order.
+
+### 1. `repository_dispatch`
+
+A hand-rolled trigger carrying an explicit `client_payload`. Selected whenever `event["client_payload"]` is present.
+
+| `client_payload` key | Maps to | Required | Notes |
+|----------------------|---------|----------|-------|
+| `repo` | `EventInfo.repo` | Yes | `owner/name` or a local path |
+| `base_sha` | `EventInfo.base_sha` | Yes | base of the comparison |
+| `head_sha` | `EventInfo.head_sha` | Yes | head of the comparison |
+| `pr_number` | `EventInfo.pr_number` | No | coerced to `int`; `None`/`""` → `None` |
+| `pr_title` | `EventInfo.pr_title` | No | `None` when absent |
+
+```json
+{
+  "client_payload": {
+    "repo": "keephq/keep-api-gateway",
+    "base_sha": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    "head_sha": "f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5",
+    "pr_number": "42",
+    "pr_title": "Add dedup endpoint"
+  }
+}
+```
+
+<Note>
+`pr_number` is coerced with best-effort int parsing (`_coerce_pr_number`), because JSON may carry it as a string (e.g. `"42"`). A value of `None` or the empty string becomes `None`.
+</Note>
+
+### 2. `push`
+
+The native GitHub push event. Selected when the event has both `before` and `after` keys.
+
+| Event field | Maps to | Notes |
+|-------------|---------|-------|
+| `repository.full_name` | `EventInfo.repo` | required (missing `repository` is treated as `{}`, raising `KeyError`) |
+| `before` | `EventInfo.base_sha` | the pre-push tip; all-zeros on first push |
+| `after` | `EventInfo.head_sha` | the new tip |
+| `head_commit.message` | `EventInfo.pr_title` | `None` when `head_commit` is absent |
+| — | `EventInfo.pr_number` | always `None` for push events |
+
+```json
+{
+  "before": "0000000000000000000000000000000000000000",
+  "after": "f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5",
+  "repository": { "full_name": "keephq/keep-api-gateway" },
+  "head_commit": { "message": "Refactor alert deduplicator" }
+}
+```
+
+<Warning>
+If the event matches neither shape — no `client_payload` and no `before`/`after` keys — `parse_event` raises `ValueError`.
+</Warning>
+
+## The null SHA
+
+GitHub uses an all-zeros SHA as the "base" of a branch's very first push (there is no prior commit to compare against). It also appears as the base of a `repository_dispatch` payload with no real ancestor.
+
+| Symbol | Value / signature | Description |
+|--------|-------------------|-------------|
+| `NULL_SHA` | `"0" * 40` | The canonical 40-character all-zeros SHA. |
+| `is_null_sha(sha)` | `(str \| None) -> bool` | `True` when `sha` is truthy and consists only of zeros (any length). Returns `False` for `None` or `""`. |
+
+When `diff_from_event` detects a null base via `is_null_sha`, it rewrites the base to `f"{info.head_sha}^"` — the head commit's first parent — so the diff is still meaningful instead of being taken against the empty tree.
+
+## Function reference
+
+### `parse_event(event: dict) -> EventInfo`
+
+Extract diff parameters from a GitHub event payload. Pure — performs no I/O. Recognizes `repository_dispatch` then `push` (see [Supported event shapes](#supported-event-shapes)). Raises `ValueError` if neither shape matches.
+
+### `load_event(event_path: str | Path) -> dict`
+
+Read and JSON-parse the event file at `event_path` (i.e. `$GITHUB_EVENT_PATH`). Returns the raw event `dict`.
+
+### `diff_from_event(event_path, *, runner=None) -> CodeDiff`
+
+Build a `CodeDiff` from a GitHub event file end to end: reads the JSON at `event_path`, parses it with `parse_event`, applies the null-base fallback, and delegates to the diffing callable.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `event_path` | `str \| Path` | — | Path to the event JSON file (`$GITHUB_EVENT_PATH` in CI). |
+| `runner` | `Optional[Callable[..., CodeDiff]]` | `None` | The diffing callable. When `None`, the module-level `diff_github` is resolved **at call time** — so tests can pass a network-free stub or monkeypatch `docsync.events.diff_github`. |
+
+The runner is invoked as:
+
+```python
+diff_fn(
+    info.repo,
+    base,                 # info.base_sha, or f"{info.head_sha}^" on a null base
+    info.head_sha,
+    pr_number=info.pr_number,
+    pr_title=info.pr_title,
+)
+```
+
+<Tabs>
+  <Tab title="In CI">
+    ```python
+    from docsync.events import diff_from_event
+
+    # GitHub sets $GITHUB_EVENT_PATH to the triggering event JSON.
+    import os
+    code_diff = diff_from_event(os.environ["GITHUB_EVENT_PATH"])
+    print(code_diff.changed_paths())
+    ```
+  </Tab>
+  <Tab title="In tests (stubbed runner)">
+    ```python
+    from docsync.events import diff_from_event
+    from docsync.models import CodeDiff
+
+    def fake_runner(repo, base, head, *, pr_number, pr_title):
+        assert base == f"{head}^"          # null-base fallback applied
+        return CodeDiff(repo=repo, base_sha=base, head_sha=head)
+
+    diff = diff_from_event("event.json", runner=fake_runner)
+    ```
+  </Tab>
+</Tabs>
+
+## `EventInfo`
+
+The diff parameters recovered from a GitHub event, **before** the null-base fixup. A `@dataclass`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `repo` | `str` | — | Repository identifier (`owner/name` or local path). |
+| `base_sha` | `str` | — | Base of the comparison (may be a null SHA). |
+| `head_sha` | `str` | — | Head of the comparison. |
+| `pr_number` | `Optional[int]` | `None` | PR number, when known. |
+| `pr_title` | `Optional[str]` | `None` | PR title or commit message, when available. |
+
+<Note>
+`EventInfo` carries the base **as recovered** — the null-base fixup (`<head>^`) is applied by `diff_from_event`, not by `parse_event`. If you call `parse_event` directly you receive the raw base SHA.
+</Note>
+
+## Data models
+
+The models below are defined in `docsync/models.py`, the single seam every pipeline stage builds against. They are **Pydantic v2** models (this is a standalone tool, unrelated to Keep's Pydantic v1 services), chosen because the Anthropic SDK's `messages.parse()` structured-output helper validates against Pydantic models directly.
+
+### `FileStatus` (enum)
+
+A string enum describing how a file changed in a diff.
+
+| Member | Value |
+|--------|-------|
+| `FileStatus.ADDED` | `"added"` |
+| `FileStatus.MODIFIED` | `"modified"` |
+| `FileStatus.REMOVED` | `"removed"` |
+| `FileStatus.RENAMED` | `"renamed"` |
+
+### `ChangedFile`
+
+One file touched by a diff, with its hunks and the code symbols affected.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | `str` | — | The file's path. |
+| `status` | `FileStatus` | — | How the file changed. |
+| `previous_path` | `Optional[str]` | `None` | Set when `status == RENAMED`. |
+| `hunks` | `list[str]` | `[]` | Unified-diff hunk texts (the `@@ ... @@` blocks + context), one entry per hunk. |
+| `changed_symbols` | `list[str]` | `[]` | Function / class / module-level assignment names whose body the hunks touch. The cross-boundary signal used by impact mapping; survives line-number churn. |
+
+### `CodeDiff`
+
+The structured result of comparing `base..head` in a single service repo — the value `diff_from_event` ultimately returns.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `repo` | `str` | — | e.g. `"keephq/keep-api-gateway"` (`owner/name`) or a local path. |
+| `base_sha` | `str` | — | Base commit SHA. |
+| `head_sha` | `str` | — | Head commit SHA. |
+| `pr_number` | `Optional[int]` | `None` | PR number, when known. |
+| `pr_title` | `Optional[str]` | `None` | PR title, when known. |
+| `files` | `list[ChangedFile]` | `[]` | The changed files. |
+
+**Methods**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `changed_paths()` | `list[str]` | Every file `path`, plus each `previous_path` for renamed files. |
+| `all_symbols()` | `list[str]` | De-duplicated union of `changed_symbols` across all files, preserving first-seen order. |
+
+```python
+diff = CodeDiff(
+    repo="keephq/keep-api-gateway",
+    base_sha="a1b2c3d4...",
+    head_sha="f6e5d4c3...",
+    pr_number=42,
+    pr_title="Add dedup endpoint",
+    files=[
+        ChangedFile(
+            path="src/routes/alerts.py",
+            status=FileStatus.MODIFIED,
+            hunks=["@@ -10,6 +10,8 @@ def list_alerts(): ..."],
+            changed_symbols=["list_alerts", "AlertDto"],
+        ),
+    ],
+)
+
+diff.changed_paths()  # ["src/routes/alerts.py"]
+diff.all_symbols()    # ["list_alerts", "AlertDto"]
+```
+
+### `SourceUnit`
+
+One documentable source file, distilled to what the bootstrap planner needs. Lightweight by design — paths and symbol names only, no file bodies — because a whole service repo's worth of these has to fit in the planner's context; excerpts are fetched per-page only at author time.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | `str` | — | Repo-relative path, e.g. `"src/routes/alerts.py"`. |
+| `kind` | `str` | — | Coarse language/role tag: `"python"`, `"typescript"`, or `"other"`. |
+| `symbols` | `list[str]` | `[]` | Top-level defs / classes / exports. |
+
+`SourceUnit`s are aggregated into a `RepoDigest` (`repo`, `root`, `units`), whose `all_symbols()` returns the de-duplicated union of every unit's `symbols`, mirroring `CodeDiff.all_symbols()`.
+
+## Relationship to the rest of the pipeline
+
+The `repo` field is the join key across stages: a `CodeDiff.repo` (from an event), a `RepoDigest.repo` (from bootstrap ingest), and the `repo` on a page's anchors (`PlannedSource.repo` / `ManifestSource.repo`) all use the same `owner/name`-or-local-path identifier, so changed paths and symbols recovered from an event can be matched back to the documentation pages they affect.
+
+<Note>
+`diff_from_event` is intentionally network-free at the parsing layer. All network access lives behind `diff_github`, which is resolved at call time — keep that boundary intact when extending event support so the module stays unit-testable.
+</Note>

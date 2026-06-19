@@ -1,0 +1,217 @@
+---
+title: "Monitoring and Troubleshooting"
+description: "Monitor docsync runs, pre-flight your manifest with the doctor, read the cost and run summaries, and diagnose pipeline failures using the built-in tooling."
+---
+
+docsync gives you three built-in lenses for watching a pipeline and tracking down problems: a **doctor** that validates your manifest against real source checkouts, a **console/PR summary** that tells you what each run did, and **cost metering** that reports estimated token spend. This guide walks through using each one to keep runs healthy and to debug them when they aren't.
+
+<CardGroup cols={3}>
+  <Card title="Pre-flight the manifest" icon="stethoscope">
+    Run `doctor` to catch dead globs, missing pages, and unmapped repos before any LLM spend.
+  </Card>
+  <Card title="Read the run summary" icon="list-check">
+    `console_summary` shows which pages were impacted, updated, or dropped — and why.
+  </Card>
+  <Card title="Track cost" icon="coins">
+    `render_usage_md` / `render_usage_console` report estimated $ and token usage per run.
+  </Card>
+</CardGroup>
+
+<Note>
+docsync edits **existing** pages only. New pages and navigation changes are flagged in reports but never auto-applied — so "no change" in a summary can be a deliberate outcome, not a failure.
+</Note>
+
+## Before you start
+
+Monitoring and troubleshooting are part of the normal `docsync run` flow — you don't install anything extra. The pieces this page covers live in:
+
+- `docsync.scaffold.doctor` → returns a `DoctorReport` (manifest health)
+- `docsync.report.console_summary` → the terminal run summary
+- `docsync.cost.render_usage_md` / `render_usage_console` → cost reporting
+
+Have a docs repo with a `.docsync/manifest.yml`, and (for the doctor) local checkouts of the source repos your manifest anchors to.
+
+## Pre-flight: validate the manifest with the doctor
+
+A manifest page that points at a page which no longer exists silently disables its anchor — a missed doc update then reads as "no drift." To catch this class of problem, `docsync run` performs a **pre-flight** by default: it calls `doctor` and aborts *before any LLM spend* if the manifest references missing pages.
+
+<Steps>
+  <Step title="Let run pre-flight automatically">
+    Pre-flight is on by default. If the manifest references a missing page, the run exits with code `2` and lists the offending pages:
+
+    ```text
+    docsync: preflight failed — manifest references missing page(s):
+      ✗ guides/old-page.mdx
+    Fix .docsync/manifest.yml (or restore the page); rerun with --no-preflight to bypass.
+    ```
+  </Step>
+  <Step title="Fix the manifest or restore the page">
+    Either remove/repoint the stale entry in `.docsync/manifest.yml`, or restore the deleted page under your `docs_root`. Re-run when fixed.
+  </Step>
+  <Step title="Bypass only when you must">
+    `--no-preflight` skips the gate. Use it sparingly — it exists for edge cases, not as a default.
+
+    ```bash
+    docsync run --docs-repo ./docs --no-preflight ...
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Pre-flight only blocks on **missing pages** (a hard issue). It does not run the full manifest validation described next — for dead globs, missing symbols, and unmapped repos you run the doctor directly against your source checkouts.
+</Warning>
+
+### Run a full manifest check
+
+For a complete audit, call `doctor` with a map of source-repo identifiers to local checkout paths. It re-resolves every manifest anchor against the real code and returns a structured `DoctorReport`.
+
+For each page source the doctor checks:
+
+- **Every glob** must match at least one file in the matching checkout — otherwise it's a **dead glob**.
+- **Every declared symbol** should appear at least textually in some glob-matched file — otherwise it's a **missing symbol** (a warning).
+- **Each page `path`** must exist under `docs_repo/<docs_root>` — otherwise it's a **missing page**.
+- **Sources whose repo has no provided checkout** are reported as **unmapped** (and skipped for glob/symbol checks).
+
+```python
+from pathlib import Path
+from docsync.scaffold import doctor
+
+report = doctor(
+    Path("./docs"),
+    {
+        "keephq/keep-api-gateway": Path("../keep-api-gateway"),
+        "keep-workflows": Path("../keep-workflows"),  # bare name also works
+    },
+)
+
+if not report.ok:
+    print("manifest has hard issues:")
+    for p in report.missing_pages:
+        print(f"  missing page: {p}")
+    for g in report.dead_globs:
+        print(f"  dead glob: [{g.page}] {g.repo} :: {g.glob}")
+
+for s in report.missing_symbols:   # warnings only — do not flip ok
+    print(f"  missing symbol: [{s.page}] {s.repo} :: {s.symbol}")
+
+for repo in report.unmapped_repos:
+    print(f"  unmapped repo (no checkout provided): {repo}")
+```
+
+<Note>
+Checkout keys are normalized with the same repo-key logic the impact mapper uses, so an `owner/name` manifest entry and a bare `name` checkout key reconcile identically. If a repo shows up as **unmapped**, you simply didn't pass a checkout for it — not necessarily a manifest bug.
+</Note>
+
+### Reading the DoctorReport
+
+`DoctorReport.ok` is the single field to gate on. It is `True` **iff** there are no *hard* issues.
+
+| Field | Meaning | Affects `ok`? |
+|-------|---------|---------------|
+| `missing_pages` | Page `path` not found under `docs_root` | ✅ hard issue |
+| `dead_globs` | A `DeadGlob` (page/repo/glob) matching no file | ✅ hard issue |
+| `missing_symbols` | A `MissingSymbol` (page/repo/symbol) not found textually | ⚠️ warning only |
+| `unmapped_repos` | Source repo with no provided checkout | ⚠️ informational |
+
+The reasoning behind the split: symbol-only drift degrades anchor *recall* but does not by itself break mapping, so missing symbols are warnings and do **not** flip `ok` to `False`.
+
+<Warning>
+`doctor` raises `FileNotFoundError` if the docs repo has no `.docsync/manifest.yml`. If you get this, you're either pointing at the wrong directory or you haven't scaffolded `.docsync/` yet.
+</Warning>
+
+## Read the run summary
+
+After the pipeline runs, the CLI prints `console_summary(result)` — your at-a-glance answer to "what did this run actually do?" It reports the count of impacted vs. updated pages, then one line per page:
+
+```text
+docsync: 4 page(s) impacted, 2 updated.
+  ✓ guides/quickstart.mdx — 2 edit(s) applied
+  ✓ reference/config.mdx — 1 edit(s) applied
+  · guides/intro.mdx — below min confidence; reported only
+  · nav/overview.mdx — new page; flagged, not auto-applied
+~$0.0123 · 6 LLM call(s) · ...
+```
+
+How to read the marks:
+
+- **`✓`** — the page was changed (`applied`).
+- **`·`** — the page was impacted but **not** changed; the trailing `note` says why (e.g. below confidence threshold, capped by `max_pages`, or a new-page/nav change that docsync only flags).
+
+<Note>
+The cost line at the bottom comes from `render_usage_console` and only appears when something was actually metered. No cost line means no billable LLM calls were made (for example, a run that exited at pre-flight or found no impacted pages).
+</Note>
+
+### The PR body and diff preview
+
+When a run opens a PR (or writes a report with `--report-path`), `pr_body` produces a richer Markdown version of the same information:
+
+- **Updated N page(s)** — per page, the edit count plus each edit's `rationale`, and any validation `⚠️` warnings.
+- **Diff preview** — a collapsed `<details>` block with a unified diff per changed page (when original texts are available).
+- **Considered but not changed** — dropped pages with their `note`.
+- **Cost (estimated)** — the rendered usage block (see below).
+
+This is the canonical record for a run; review it before merging.
+
+## Track cost and token usage
+
+Every LLM stage (impact judge, edit generation, self-critique) goes through a `MeteredClient` proxy that records the `usage` off each response. At the end of a run the meter is collapsed into a `RunUsage`, which the reporters turn into human-readable output.
+
+<Tabs>
+  <Tab title="Markdown (PR body)">
+    `render_usage_md(usage)` returns the lines embedded in the PR body. It is **empty** when nothing was metered (`usage is None` or `usage.calls == 0`):
+
+    ```text
+    ### Cost (estimated)
+    ~$0.0123 · 6 LLM call(s) · 18,240 in / 2,110 out tokens · prompt-cache hit 41%
+    - `claude-sonnet-4` (edit) — 4 call(s), ~$0.0101
+    - `claude-haiku-4` (judge) — 2 call(s), ~$0.0022
+    _Estimated from a built-in price table; may differ from your actual bill._
+    ```
+
+    Note that spend is broken out per `(model, stage)`, so a judge and a critique that both use Haiku stay separable.
+  </Tab>
+  <Tab title="Console (terminal)">
+    `render_usage_console(usage)` is the one-line variant appended to `console_summary`. Same source data, condensed for the terminal.
+  </Tab>
+</Tabs>
+
+<Warning>
+All cost figures are **estimates**. `RunUsage.estimated` is always `True`: prices come from a built-in per-million-token table (`PRICING`) that can drift from your real Anthropic bill. An **unknown model is priced as opus-class** so cost is never silently under-reported. Treat the numbers as a guide, not an invoice — and update `PRICING` when rates change.
+</Warning>
+
+## Troubleshooting common failures
+
+<Steps>
+  <Step title="Run exits with code 2 at the start">
+    Pre-flight failed: the manifest references a page that doesn't exist. Read the `✗` list, fix `.docsync/manifest.yml` or restore the page, and re-run. Only use `--no-preflight` if you understand why the page is absent.
+  </Step>
+  <Step title="A page you expected to update wasn't edited">
+    Check its line in `console_summary`. A `·` mark with a note explains it — common causes: impact confidence below `min_edit_confidence` (override per-run with `--min-confidence`), the page fell outside `max_pages_per_run` (override with `--max-pages`), or it's a new-page / nav change that docsync flags but never auto-applies.
+  </Step>
+  <Step title='Run reports "no validated changes; nothing to open"'>
+    The pipeline produced no applied edits. Re-run the doctor with your source checkouts: a **dead glob** or **missing symbol** means the anchor for that page no longer matches the code, so real drift looks like "no drift." Fix the anchor and re-run.
+  </Step>
+  <Step title='Run says "already processed — skipping"'>
+    docsync tracks a per-repo cursor and skips a `repo@head_sha` it has already handled. This is expected idempotency, not an error. Advance the source ref (or target a new commit) to trigger a fresh run.
+  </Step>
+  <Step title="No cost line appears">
+    Nothing was metered. Either the run short-circuited before any LLM call (pre-flight abort, already-processed, no impacted pages) or you're using a client that returns no `usage`. Confirm the run actually reached the edit stage via the summary's impacted/updated counts.
+  </Step>
+  <Step title="Cost looks higher than expected">
+    Remember an unknown model id is priced as opus-class. Verify the model in the per-model breakdown lines — an unexpected `claude-opus-4`-priced entry for a model you didn't intend points at a misconfigured or unrecognized model id.
+  </Step>
+</Steps>
+
+## Quick reference
+
+| Symbol | Module | Use it to |
+|--------|--------|-----------|
+| `doctor` | `docsync.scaffold` | Validate the manifest against real source checkouts |
+| `DoctorReport` | `docsync.scaffold` | Inspect results; gate CI on `report.ok` |
+| `console_summary` | `docsync.report` | See per-page run outcomes in the terminal |
+| `render_usage_md` | `docsync.cost` | Embed estimated cost/token usage in the PR body |
+| `render_usage_console` | `docsync.cost` | Append a one-line cost summary to the terminal |
+
+<Note>
+For the strict, abort-early subset, the `run` command's `--preflight` (default on) already wires `doctor` into every run — so the cheapest way to monitor manifest health is simply to run docsync and watch for the pre-flight gate.
+</Note>

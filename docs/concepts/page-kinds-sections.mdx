@@ -1,0 +1,228 @@
+---
+title: Page Kinds and Information Architecture
+description: How docsync's bootstrap planner organizes a generated documentation site into three page kinds (guide, concept, reference) and five ordered sections, and how those choices shape both reading flow and how pages are kept live.
+---
+
+When docsync authors a documentation site from scratch (`docsync bootstrap`), it does not emit a flat pile of API pages. It plans an **information architecture**: an ordered set of *sections*, each holding pages of a particular *kind*. Those two axes — section and kind — decide where a page sits in the reading flow, how its author prompt is written, and whether future code changes trigger an expensive rewrite or a cheap judge check.
+
+This page explains both axes and how they come together in the plan stage.
+
+<CardGroup cols={3}>
+  <Card title="guide" icon="map">
+    Task-oriented onboarding — Getting Started, how-to, setup/run. Loosely anchored, routed through the judge when updated.
+  </Card>
+  <Card title="concept" icon="book-open">
+    Narrative explanations of a subsystem or cross-service flow — prose, not API tables. Broad anchors, judged. (You are reading one now.)
+  </Card>
+  <Card title="reference" icon="code">
+    Code-anchored API / data-model pages. Precise file + symbol anchors, judge-autopass.
+  </Card>
+</CardGroup>
+
+## Where this fits in bootstrap
+
+`docsync bootstrap` runs a six-stage pipeline that turns a whole-platform snapshot into a sequenced site. The information architecture is decided in **stage B2 (plan)**:
+
+```text
+B1 ingest   → RepoDigest per repo (read-only)
+B2 plan     → DocPlan: an ordered, sectioned IA (one judge-model call) + dedupe
+B3 author   → full MDX per page, kind-specific prompt
+B4 validate → validate_new_page (absolute gates — no original to diff)
+B5 emit     → write files + ordered nav sections + manifest anchors
+B6 PR       → open the pull request
+```
+
+The planner is handed a compact, per-repo digest (file paths plus their top-level symbols) and asked to return a `DocPlan` — a flat, section-tagged list of pages. Everything downstream (the author prompt in B3, the nav grouping in B5, the keep-alive routing in `docsync run`) reads off the `kind` and `section` the planner assigned here.
+
+<Note>
+The plan is a **single** judge-model call. The planner sees only lightweight digests — paths and symbol names, never file bodies — because a whole platform's worth of source has to fit inside one prompt. Source excerpts are fetched per-page later, at author time.
+</Note>
+
+## The three page kinds
+
+A page's kind is captured by the `PageKind` type, a closed set of three string literals:
+
+```python
+PageKind = Literal["concept", "guide", "reference"]
+```
+
+The planner's system prompt defines each kind by its job:
+
+| Kind | Purpose | Anchoring | Typical section |
+|------|---------|-----------|-----------------|
+| `guide` | Task-oriented onboarding (Getting Started, how-to, setup/run) | Broad globs, few/no symbols | Getting Started |
+| `concept` | Narrative explanation of a subsystem or cross-service flow — prose, not API tables; may span multiple repos | Broad globs over the subsystem(s) | Concepts, Architecture |
+| `reference` | Code-anchored API / data-model pages | Specific files + symbols | Reference |
+
+The kind is steered by anchoring. The planner is told that **reference** pages should anchor to specific files and symbols, while **concept** and **guide** pages should anchor to *broader* globs over the subsystem they describe, carrying few or no symbols. Platform-level narrative pages — an Introduction, an Architecture overview, a cross-service data-flow page — are explicitly authored as concept or guide kind because they span multiple repos.
+
+### Why kind controls keep-alive cost
+
+The kind isn't just a label for the author prompt. It decides how `docsync run` keeps a page live as code changes, through the `judge_required` property on `PlannedPage`:
+
+```python
+@property
+def judge_required(self) -> bool:
+    """Narrative pages route through the judge (not anchor-autopass) when updated."""
+    return self.kind in ("concept", "guide")
+```
+
+The trade-off is about anchor breadth versus rewrite cost:
+
+- A **reference** page anchors to precise files and symbols. When exactly that code changes, the page almost certainly needs updating, so it can *autopass* straight to an edit.
+- A **concept** or **guide** page anchors to a *whole subsystem*. If it autopassed, every unrelated change anywhere in that subsystem would fire a costly Opus rewrite. Routing it **through the judge** means the model first decides whether the change actually invalidates the page — an edit only happens when it does.
+
+<Warning>
+This is why broad anchors and `judge_required` go together. A narrative page deliberately points at a wide glob so it stays conceptually complete, and the judge gate is what keeps that breadth from turning into constant, wasteful edits.
+</Warning>
+
+## The five standard sections
+
+Pages are grouped into named sections, and those sections are emitted in a fixed reading order defined by `SECTION_ORDER`:
+
+```python
+SECTION_ORDER: tuple[str, ...] = (
+    "Getting Started",
+    "Concepts",
+    "Architecture",
+    "Reference",
+    "Operations",
+)
+```
+
+This sequence is the spine of the generated site — a deliberate flow from first contact to deep detail:
+
+<Steps>
+  <Step title="Getting Started">
+    Onboarding and setup. Mostly `guide` pages — install, run, first success.
+  </Step>
+  <Step title="Concepts">
+    Narrative `concept` pages explaining how subsystems and cross-service flows work.
+  </Step>
+  <Step title="Architecture">
+    Higher-level `concept`/`guide` pages: system structure, data flow across services.
+  </Step>
+  <Step title="Reference">
+    Code-anchored `reference` pages — the API and data-model detail.
+  </Step>
+  <Step title="Operations">
+    Running and maintaining the platform.
+  </Step>
+</Steps>
+
+The planner is told to organize pages "using this vocabulary and order where they apply." Section names are not hard-locked to the five above — a page can declare any section string — but the canonical five always sort first, in the order listed.
+
+## How sections become ordered nav
+
+The `DocPlan` the planner returns is intentionally **flat**: a single list of `PlannedPage` objects, each tagged with its `section` and an integer `order`. Flat structured output is far more reliable through the LLM backend than nested sections, so the nesting is reconstructed in code by `DocPlan.ordered_sections()`:
+
+```python
+def ordered_sections(self) -> list[tuple[str, list[PlannedPage]]]:
+    seen: list[str] = []
+    buckets: dict[str, list[PlannedPage]] = {}
+    for p in self.pages:
+        if p.section not in buckets:
+            buckets[p.section] = []
+            seen.append(p.section)
+        buckets[p.section].append(p)
+
+    def section_key(name: str) -> tuple[int, int]:
+        canonical = SECTION_ORDER.index(name) if name in SECTION_ORDER else len(SECTION_ORDER)
+        return (canonical, seen.index(name))
+
+    out: list[tuple[str, list[PlannedPage]]] = []
+    for name in sorted(seen, key=section_key):
+        pages = sorted(buckets[name], key=lambda p: (p.order, p.title))
+        out.append((name, pages))
+    return out
+```
+
+Two sorting rules fall out of this:
+
+1. **Between sections** — `section_key` ranks each section by its index in `SECTION_ORDER`. Any section *not* in the canonical list gets the sentinel rank `len(SECTION_ORDER)`, so it sorts *after* all canonical sections; ties among such unknown sections break by **first appearance** in the plan (their position in `seen`). The result is a stable, deterministic ordering even when the planner invents a custom section name.
+2. **Within a section** — pages sort by `(order, title)`: ascending integer `order` first, with the title as a stable tiebreaker.
+
+### A worked example
+
+Suppose the planner returns these pages (in this order):
+
+```text
+PlannedPage(page_path="reference/alerts.mdx",            section="Reference",       order=1)
+PlannedPage(page_path="getting-started/introduction.mdx",section="Getting Started", order=0)
+PlannedPage(page_path="faq.mdx",                          section="Help",            order=0)
+PlannedPage(page_path="concepts/data-flow.mdx",          section="Concepts",        order=2)
+PlannedPage(page_path="concepts/overview.mdx",           section="Concepts",        order=1)
+```
+
+`ordered_sections()` regroups and reorders them into:
+
+```text
+Getting Started
+  - getting-started/introduction.mdx   (order 0)
+Concepts
+  - concepts/overview.mdx              (order 1)
+  - concepts/data-flow.mdx             (order 2)
+Reference
+  - reference/alerts.mdx               (order 1)
+Help                                   (unknown section → sorts last)
+  - faq.mdx                            (order 0)
+```
+
+`Architecture` and `Operations` simply don't appear because no page claimed them — the canonical order is a *template*, not a requirement to fill every slot. `Help`, which isn't in `SECTION_ORDER`, lands after every canonical section.
+
+## Anchoring a page to source
+
+Each `PlannedPage` carries a list of `PlannedSource` anchors that tie the page back to real code across one or more repos:
+
+```python
+class PlannedSource(BaseModel):
+    repo: str               # which source repo (matches a RepoDigest.repo)
+    globs: list[str]        # fnmatch globs over changed paths
+    symbols: list[str]      # symbol names (trailing * = prefix)
+```
+
+The planner is held to two hard rules about anchors:
+
+- **Every page must have at least one source** with a real repo drawn from the digest list.
+- The anchor *style* must match the kind: reference pages point at specific files and symbols; concept/guide pages point at broader globs with few or no symbols.
+
+This is the same shape used by the persisted manifest (`ManifestSource` / `ManifestPage`), which is what lets `docsync run` later map a code change back to the pages it might affect — and decide, via `judge_required`, whether to autopass or judge.
+
+## The PlannedPage in full
+
+Putting the axes together, here is the structure the planner emits per page, with its defaults:
+
+```python
+class PlannedPage(BaseModel):
+    page_path: str                          # new .mdx path, e.g. "reference/alerts.mdx"
+    title: str
+    kind: PageKind = "reference"
+    section: str = "Reference"              # nav group / section heading
+    order: int = 0                          # position within the section (ascending)
+    summary: str = ""                       # what the page should cover (steers authoring)
+    sources: list[PlannedSource] = []       # multi-repo anchors
+```
+
+A few defaults are worth calling out:
+
+<CardGroup cols={2}>
+  <Card title="Reference-first defaults" icon="code">
+    `kind` defaults to `"reference"` and `section` to `"Reference"` — the conservative choice for a code-anchored page when the planner doesn't say otherwise.
+  </Card>
+  <Card title="Summary steers authoring" icon="pen">
+    The one-sentence `summary` isn't decoration — it's carried into stage B3 to steer how the page is written.
+  </Card>
+</CardGroup>
+
+<Note>
+The planner is also instructed never to propose a page whose path or route already exists, and to avoid duplicate paths. After the model responds, `plan_docs` dedupes any collisions (against existing pages, existing nav routes, and earlier plan entries) and can cap the total with `max_pages` — so the kinds and sections you see in the final site are the survivors of that pass.
+</Note>
+
+## Putting it together
+
+The two axes do different jobs, and a well-planned page sets both deliberately:
+
+- **Kind** answers *"what is this page for, and how should it be maintained?"* — narrative (concept/guide, broad anchors, judged) versus precise (reference, tight anchors, autopass).
+- **Section** answers *"where does the reader meet this page?"* — its slot in the Getting Started → Concepts → Architecture → Reference → Operations flow.
+
+Together they turn a raw multi-repo snapshot into a site with a real reading order, where each page is anchored to the code it describes and kept alive at a cost that matches how broadly it reaches.

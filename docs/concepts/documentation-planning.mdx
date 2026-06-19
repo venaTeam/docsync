@@ -1,0 +1,262 @@
+---
+title: Documentation Planning
+description: How docsync analyzes a multi-repo platform and automatically plans a sectioned documentation site — with page kinds, ordered sections, and code anchor points.
+---
+
+When a software platform has no documentation, the hardest part isn't writing the prose — it's deciding *what pages should exist*, in *what order*, and *what code each one is responsible for*. docsync's **planning stage** answers exactly those questions. It reads a lightweight snapshot of every source repo, hands it to a judge model, and gets back a `DocPlan`: an ordered, sectioned information architecture (IA) where every page knows which subsystem it documents.
+
+This page explains how that planning works — the data it consumes, the prompt that steers the model, the structure it produces, and the post-processing that makes the result safe to author.
+
+<Note>
+Planning is stage **B2** of `docsync bootstrap`, the from-scratch generation pipeline. It runs *after* ingestion produces a `RepoDigest` per repo and *before* the author stage writes full MDX. It is the single planning brain of the bootstrap flow — one judge-model call decides the whole site shape.
+</Note>
+
+## Where planning sits in the pipeline
+
+`docsync bootstrap` authors a structured docs site from a whole-platform snapshot, in six stages:
+
+<Steps>
+  <Step title="B1 — ingest">
+    `ingest.walk_repos` walks each repo read-only and produces a `RepoDigest`: a list of `SourceUnit`s (paths + top-level symbol names, no file bodies).
+  </Step>
+  <Step title="B2 — plan">
+    `plan_docs` asks the judge model for a `DocPlan`, then dedupes collisions and caps the page count. **This is the stage this page documents.**
+  </Step>
+  <Step title="B3 — author">
+    Each planned page is rendered to full MDX with a kind-specific prompt, in parallel and metered for cost.
+  </Step>
+  <Step title="B4 — validate">
+    `validate_new_page` applies absolute gates (there is no original page to diff against).
+  </Step>
+  <Step title="B5 — emit">
+    Files, ordered nav sections, and manifest anchors are written out.
+  </Step>
+  <Step title="B6 — PR">
+    The CLI wires `pr.open_pr` to open the change as a pull request.
+  </Step>
+</Steps>
+
+The key idea: planning consumes *cheap, symbol-level digests* — never file bodies. A whole service repo's worth of `SourceUnit`s has to fit in the planner's context, so excerpts are fetched per-page only later, at author time.
+
+## What the planner reads: RepoDigest
+
+The planner's entire view of the platform is a list of `RepoDigest` objects. Each one is the lightweight, whole-repo snapshot bootstrap plans from:
+
+```python
+class RepoDigest(BaseModel):
+    repo: str   # owner/name or local path (mirrors CodeDiff.repo)
+    root: str   # absolute path the units were walked from
+    units: list[SourceUnit]
+```
+
+Every `SourceUnit` is distilled to just what the planner needs — paths and symbol names, deliberately *without* file contents:
+
+```python
+class SourceUnit(BaseModel):
+    path: str               # repo-relative, e.g. "src/routes/alerts.py"
+    kind: str               # "python" | "typescript" | "other"
+    symbols: list[str]      # top-level defs / classes / exports
+```
+
+Before this reaches the model, `render_digests` flattens the digests into a compact, per-repo text listing of files and their top-level symbols:
+
+```
+## repo: keephq/keep-api-gateway
+- src/routes/alerts.py  ::  list_alerts, create_alert, AlertController
+- src/services/search_engine.py  ::  SearchEngine
+…
+```
+
+<Warning>
+A big platform could overflow the planner's context. `render_digests` caps each repo's listing at `_DIGEST_MAX_CHARS_PER_REPO` (12,000 characters). When a repo exceeds that budget, the listing is truncated with a `… (N files in this repo; list truncated)` marker rather than silently dropping files. Symbols per file are also capped at the first 12.
+</Warning>
+
+## Building the planning prompt
+
+`build_plan_prompt` returns a `(system, user)` tuple for the judge call. The system prompt is where the IA philosophy lives — it instructs the model to design a real reading flow, not a flat list of API pages.
+
+### Sections and page kinds
+
+The prompt establishes two organizing axes. First, an ordered set of **sections**, drawn from a canonical vocabulary:
+
+```python
+SECTION_ORDER: tuple[str, ...] = (
+    "Getting Started",
+    "Concepts",
+    "Architecture",
+    "Reference",
+    "Operations",
+)
+```
+
+Second, three **page kinds**, each of which steers both how the page is authored and — crucially — how it is later kept up to date:
+
+<CardGroup cols={3}>
+  <Card title="guide">
+    Task-oriented onboarding: Getting Started, how-to, setup/run. Loosely anchored to broad globs.
+  </Card>
+  <Card title="concept">
+    Narrative explanations of a subsystem or cross-service flow — prose, not API tables. Anchors to broad subsystem globs.
+  </Card>
+  <Card title="reference">
+    Code-anchored API / data-model pages. Anchors to specific files and symbols.
+  </Card>
+</CardGroup>
+
+The prompt explicitly asks for platform-level narrative pages — an Introduction, an Architecture overview, a cross-service data-flow page — as `concept`/`guide` kind, and notes these **may span multiple repos**.
+
+### Per-page contract
+
+For each page, the system prompt requires the model to provide a precise set of fields: a new kebab-case `.mdx` `page_path` under a section folder (e.g. `getting-started/introduction.mdx`, `architecture/data-flow.mdx`, `reference/alerts.mdx`), a `title`, a `kind`, a `section` (the nav group heading), an integer `order` (ascending within the section), a one-sentence `summary`, and `sources` — a list of `{repo, globs, symbols}` anchoring the page to real code.
+
+The anchoring rule differs by kind:
+
+- **Reference pages** anchor to specific files + symbols.
+- **Concept/guide pages** anchor to *broader* globs over the subsystem(s) they describe, with few or no symbols.
+
+Two hard constraints close the prompt: every page must have at least one source naming a real repo from the list, and the model must not propose a page whose path or route already exists.
+
+### Telling the model what already exists
+
+The user message carries the rendered digests plus a block of pages and routes that **already exist on disk**, so the model avoids proposing duplicates:
+
+```python
+existing_block = (
+    "\n".join(f"- {r}" for r in sorted(existing_routes) + sorted(existing_pages))
+    or "(none)"
+)
+```
+
+These come from two helpers: `_existing_page_paths` walks `docs_root` for every `.mdx`/`.md` already present (skipping anything under `.docsync`), and the adapter's `nav_routes` supplies the extensionless route forms.
+
+## The structured output: DocPlan and PlannedPage
+
+The model is forced to return a `DocPlan` via the Anthropic SDK's `messages.parse()` structured-output helper, which validates directly against the pydantic model. The plan is deliberately **flat** — a section-tagged list of pages, not nested sections:
+
+```python
+class DocPlan(BaseModel):
+    """The planner's structured response: a flat, section-tagged set of pages."""
+    pages: list[PlannedPage]
+```
+
+Each `PlannedPage` mirrors the per-page contract from the prompt:
+
+```python
+class PlannedPage(BaseModel):
+    page_path: str                  # e.g. "reference/alerts.mdx"
+    title: str
+    kind: PageKind = "reference"    # "concept" | "guide" | "reference"
+    section: str = "Reference"
+    order: int = 0
+    summary: str = ""
+    sources: list[PlannedSource]    # multi-repo anchors
+```
+
+And each anchor is repo-qualified, so a single page can point at code across multiple repos:
+
+```python
+class PlannedSource(BaseModel):
+    repo: str               # matches a RepoDigest.repo
+    globs: list[str]        # fnmatch globs over changed paths
+    symbols: list[str]      # symbol names (trailing * = prefix)
+```
+
+<Note>
+The plan is kept flat rather than nested because flat structured output is far more reliable through the CLI backend. The ordered, nested view is derived later in code — never asked of the model.
+</Note>
+
+### Deriving ordered sections
+
+`DocPlan.ordered_sections()` turns the flat list into the site's reading flow. Sections named in `SECTION_ORDER` come first in that canonical order; any unknown sections follow in first-appearance order. Within each section, pages sort by `order`, then `title`:
+
+```python
+def section_key(name: str) -> tuple[int, int]:
+    canonical = SECTION_ORDER.index(name) if name in SECTION_ORDER else len(SECTION_ORDER)
+    return (canonical, seen.index(name))
+```
+
+This is what stage B5 uses to emit nav groups in sequence.
+
+## Page kind drives how a page stays alive
+
+The most consequential field on a `PlannedPage` is `kind`, because it determines how `docsync run` treats the page after the diff-driven update pipeline takes over. That decision is encoded in a single derived property:
+
+```python
+@property
+def judge_required(self) -> bool:
+    """Narrative pages route through the judge (not anchor-autopass) when updated."""
+    return self.kind in ("concept", "guide")
+```
+
+Here's why it matters. A `reference` page anchors to precise files and symbols, so when those change, an edit is almost certainly warranted — it can *autopass* straight to authoring. But a `concept` or `guide` page anchors to a whole subsystem via broad globs. If such a page autopassed, *every* unrelated change inside that subsystem would fire a costly Opus edit.
+
+<CardGroup cols={2}>
+  <Card title="reference → anchor autopass">
+    Precise anchors. A matching change is presumed relevant and triggers an edit directly.
+  </Card>
+  <Card title="concept / guide → judge required">
+    Broad anchors. `judge_required` routes the change through the judge, which only fires an edit when the change actually invalidates the page.
+  </Card>
+</CardGroup>
+
+So the planner's choice of broad globs for narrative pages, combined with `judge_required`, is what lets a generated concept page stay live across many changes without burning budget on spurious edits.
+
+## Post-processing: dedupe and cap
+
+The model's raw output is not used directly. `plan_docs` runs the judge call inside a cost stage, then cleans the result:
+
+```python
+with cost.stage("plan"):
+    resp = client.messages.parse(
+        model=config.models.judge_model,
+        max_tokens=_PLAN_MAX_TOKENS,
+        system=[{"type": "text", "text": system}],
+        messages=[{"role": "user", "content": user}],
+        output_format=DocPlan,
+    )
+raw_plan: DocPlan = resp.parsed_output
+```
+
+Two cleanup steps follow:
+
+<Steps>
+  <Step title="Dedupe collisions">
+    Even with prompt instructions, the model can propose a page that collides with one already on disk, with an existing nav route, or with an earlier entry in the same plan. These are dropped. `page_path`s are normalized first (`_normalize_page_path` strips leading slashes and ensures an `.mdx`/`.md` extension; `_route_of` derives the extensionless route).
+  </Step>
+  <Step title="Cap the count">
+    The optional `max_pages` argument caps the plan — applied **after** dedupe, so the cap counts only surviving pages.
+  </Step>
+</Steps>
+
+The function returns a `(DocPlan, list[str])` tuple. The second element, `skipped`, lists the planned page paths that were dropped for colliding — surfacing exactly what the cleanup removed rather than discarding it silently.
+
+```python
+def plan_docs(
+    digests: list[RepoDigest],
+    docs_root: Path,
+    config: DocsyncConfig,
+    *,
+    client,
+    max_pages: int | None = None,
+) -> tuple[DocPlan, list[str]]:
+    ...
+```
+
+<Note>
+Every LLM call in bootstrap — including this planning call — goes through the injectable `client`, which is wrapped in a `MeteredClient`. That's how the cost of planning lands on `result.usage` alongside the author stage, and why `plan_docs` wraps the call in `cost.stage("plan")`.
+</Note>
+
+## A worked example
+
+Suppose ingestion produced digests for `keep-api-gateway` and `keep-event-handler`. A plausible slice of the resulting `DocPlan` might look like this — note how kinds, sections, ordering, and anchor breadth all line up with the rules above:
+
+| page_path | kind | section | order | sources (repo · globs · symbols) |
+|---|---|---|---|---|
+| `getting-started/introduction.mdx` | guide | Getting Started | 0 | both repos · `src/**` · — |
+| `architecture/data-flow.mdx` | concept | Architecture | 0 | both repos · `src/**` · — |
+| `concepts/deduplication.mdx` | concept | Concepts | 1 | `keep-event-handler` · `src/alert_deduplicator/**` · — |
+| `reference/alerts.mdx` | reference | Reference | 0 | `keep-api-gateway` · `src/routes/alerts.py` · `list_alerts, create_alert` |
+
+When `ordered_sections()` runs over this flat list, it emits the groups in canonical order — **Getting Started → Concepts → Architecture → Reference** — and sorts pages within each by `order` then `title`. The two narrative pages (`introduction`, `data-flow`, `deduplication`) all carry `judge_required == True` and anchor to broad globs with no symbols; the `alerts` reference page anchors to one file and two specific symbols and will autopass on matching changes.
+
+That single plan is everything the author stage needs: for each page it knows the title, the kind-specific prompt to use, the section it belongs to, and — via `sources` — exactly which files to excerpt when it sits down to write the prose.

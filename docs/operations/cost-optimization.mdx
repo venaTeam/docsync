@@ -1,0 +1,190 @@
+---
+title: "Cost Optimization Strategies"
+description: "Reduce LLM API spend and tune token usage in docsync by capping per-stage tokens, pricing each model accurately, and monitoring run cost with UsageMeter and render_usage_md."
+---
+
+Every docsync LLM stage — the impact judge, edit generation, self-critique, the bootstrap planner, and page authoring — runs through an injectable `client`, and that client is wrapped once in a `MeteredClient`. The wrapper records token `usage` off every response, so cost is accumulated centrally without touching individual call sites. This guide walks through the three levers you control: **planning** (token caps), **batching/attribution** (per-stage metering), and **monitoring** (rendered cost summaries).
+
+<Note>
+  All dollar figures docsync reports are **estimates**. `RunUsage.estimated` is always `True` because prices come from a built-in table (`PRICING`) that can drift from your actual Anthropic bill. Use the numbers for relative comparison and budgeting, not reconciliation.
+</Note>
+
+## The three levers
+
+<CardGroup cols={3}>
+  <Card title="Plan" icon="ruler">
+    Cap the tokens each stage can spend with `_PLAN_MAX_TOKENS` and `_AUTHOR_MAX_TOKENS`, and bound the digest handed to the planner.
+  </Card>
+  <Card title="Meter" icon="gauge">
+    `MeteredClient` proxies any client and feeds `UsageMeter`, attributing spend per `(model, stage)` via `pricing_for`.
+  </Card>
+  <Card title="Monitor" icon="chart-line">
+    `render_usage_md` turns the accumulated `RunUsage` into a cost summary you can drop into a PR or console.
+  </Card>
+</CardGroup>
+
+## Lever 1 — Plan: cap tokens before you spend them
+
+The cheapest token is the one you never request. The bootstrap pipeline sets hard output ceilings on its two most expensive stages, and bounds the input it feeds the planner.
+
+| Constant | Value | What it caps |
+| --- | --- | --- |
+| `_PLAN_MAX_TOKENS` | `6_000` | `max_tokens` for the single IA planner (judge-model) call |
+| `_AUTHOR_MAX_TOKENS` | `8_000` | `max_tokens` for each per-page authoring call |
+| `_DIGEST_MAX_CHARS_PER_REPO` | `12_000` | How much of each repo digest the planner sees |
+| `_MAX_EXCERPT_FILES` | `6` | Source files excerpted into one page's author prompt |
+
+These live in `bootstrap.py`. The planner call passes its cap directly:
+
+```python
+with cost.stage("plan"):
+    resp = client.messages.parse(
+        model=config.models.judge_model,
+        max_tokens=_PLAN_MAX_TOKENS,
+        system=[{"type": "text", "text": system}],
+        messages=[{"role": "user", "content": user}],
+        output_format=DocPlan,
+    )
+```
+
+<Warning>
+  `_DIGEST_MAX_CHARS_PER_REPO` is a cost *and* correctness control. `render_digests` truncates each repo's file list once it exceeds the budget (emitting a `… (N files in this repo; list truncated)` marker) so a large platform can't overflow the planner's context. Raising it grows every plan prompt's input tokens linearly across all repos.
+</Warning>
+
+### Choosing a cheaper model per stage
+
+`pricing_for` resolves a model id to a price table by **longest matching prefix**, so model choice is the largest single cost lever. Built-in rates (USD per *million* tokens):
+
+| Model prefix | Input | Output | Cache write | Cache read |
+| --- | --- | --- | --- | --- |
+| `claude-opus-4` | 15.0 | 75.0 | 18.75 | 1.50 |
+| `claude-sonnet-4` | 3.0 | 15.0 | 3.75 | 0.30 |
+| `claude-haiku-4` | 1.0 | 5.0 | 1.25 | 0.10 |
+
+<Note>
+  An unrecognized model id falls back to **opus-class** pricing (`_FALLBACK`), so cost is never silently under-reported. If your usage summary looks suspiciously expensive, check that your model id matches a known prefix.
+</Note>
+
+Authoring runs on Opus (the most expensive tier), while the IA plan uses the configured `judge_model`. Pointing judge/critique stages at a Haiku- or Sonnet-class model is the highest-leverage saving available, because those rates are 3–15× lower than Opus per token.
+
+## Lever 2 — Meter: attribute every call automatically
+
+Metering is added by wrapping the client **once**, not by editing call sites. `MeteredClient` is a transparent proxy: it intercepts `.messages.parse(...)`, records `usage`, and passes `.parsed_output` through untouched. Every other attribute falls through to the inner client, so it substitutes anywhere a real `anthropic.Anthropic()` (or `ClaudeCodeClient`) is used.
+
+<Steps>
+  <Step title="Create a meter">
+    ```python
+    from docsync.cost import UsageMeter, MeteredClient
+
+    meter = UsageMeter()
+    ```
+    `UsageMeter` is a thread-safe accumulator keyed by `(model, stage)`, so two stages that share a model (e.g. judge vs. critique both on Haiku) stay separable.
+  </Step>
+  <Step title="Wrap your real client once">
+    ```python
+    client = MeteredClient(anthropic.Anthropic(), meter)
+    ```
+    Pass this `client` everywhere docsync expects an injectable client. No call site changes.
+  </Step>
+  <Step title="Tag each call's stage">
+    Wrap LLM calls in a `stage(...)` context so spend is attributed without threading a parameter through every function:
+    ```python
+    from docsync import cost
+
+    with cost.stage("author"):
+        resp = client.messages.parse(
+            model="claude-opus-4-...",
+            max_tokens=_AUTHOR_MAX_TOKENS,
+            ...,
+        )
+    ```
+    `stage` sets a `ContextVar`, which is per-thread — so a value set inside a `ThreadPoolExecutor` worker is the one its own `parse()` reads. This is exactly what you want when authoring pages run concurrently.
+  </Step>
+  <Step title="Finalize into a RunUsage">
+    ```python
+    run = meter.finalize()
+    ```
+    `finalize()` collapses the accumulator into a serializable `RunUsage`, sorted by cost descending, and computes the overall `cache_hit_rate`.
+  </Step>
+</Steps>
+
+<Note>
+  `UsageMeter.record(...)` is a **no-op when `usage` is missing** (for example, fake clients in tests). Metering never breaks a run that produces no usage data.
+</Note>
+
+### How a single call's cost is computed
+
+`cost_of` reads four token classes off the response and applies the model's price table. Both response shapes are handled: the SDK's `usage` object (attribute access) and the `claude-code` CLI envelope's `usage` dict.
+
+```python
+def cost_of(model, usage):
+    p = pricing_for(model)
+    return (
+        _get(usage, "input_tokens") * p.input
+        + _get(usage, "output_tokens") * p.output
+        + _get(usage, "cache_creation_input_tokens") * p.cache_write
+        + _get(usage, "cache_read_input_tokens") * p.cache_read
+    ) / 1_000_000
+```
+
+Because `cache_read` is the cheapest class (e.g. `1.50` vs `15.0` input for Opus), maximizing prompt-cache reuse across stages directly lowers the bill — and the cache hit rate is surfaced for exactly this reason.
+
+## Lever 3 — Monitor: read the cost back
+
+`render_usage_md` turns a finalized `RunUsage` into Markdown lines you can drop into a PR body. It returns an **empty list** when nothing was metered (`usage is None` or `usage.calls == 0`), so it's safe to call unconditionally.
+
+```python
+from docsync.cost import render_usage_md
+
+lines = render_usage_md(run)
+print("\n".join(lines))
+```
+
+A typical rendering:
+
+```markdown
+### Cost (estimated)
+~$0.4213 · 7 LLM call(s) · 48,120 in / 9,330 out tokens · prompt-cache hit 62%
+- `claude-opus-4-...` (author) — 5 call(s), ~$0.3901
+- `claude-sonnet-4-...` (plan) — 1 call(s), ~$0.0210
+- `claude-haiku-4-...` (critique) — 1 call(s), ~$0.0102
+- _Estimated from a built-in price table; may differ from your actual bill._
+```
+
+The per-model lines carry the `(stage)` suffix, so you can immediately see which stage dominates spend and decide where to apply Lever 1 (smaller cap or cheaper model). A `render_usage_console` variant produces a single-line summary for terminal output.
+
+<Tabs>
+  <Tab title="Reduce output tokens">
+    Output is the most expensive class on every tier (e.g. `75.0` for Opus). Lower `_AUTHOR_MAX_TOKENS` / `_PLAN_MAX_TOKENS` to bound what each call can generate.
+  </Tab>
+  <Tab title="Reduce input tokens">
+    Shrink prompts: lower `_DIGEST_MAX_CHARS_PER_REPO` (planner input) and `_MAX_EXCERPT_FILES` (per-page author input) so fewer source bytes are sent.
+  </Tab>
+  <Tab title="Downgrade the model">
+    Point judge/critique stages at a Sonnet- or Haiku-class model. `pricing_for` will resolve the cheaper table automatically, and the saving shows up per-stage in the usage summary.
+  </Tab>
+  <Tab title="Raise cache reuse">
+    Watch `cache_hit_rate` in the summary. Higher reuse shifts tokens into the much cheaper `cache_read` class.
+  </Tab>
+</Tabs>
+
+## Putting it together
+
+<Steps>
+  <Step title="Wrap and meter">
+    Create a `UsageMeter`, wrap your client in `MeteredClient` once, and let every stage call flow through it.
+  </Step>
+  <Step title="Set your caps">
+    Confirm `_PLAN_MAX_TOKENS`, `_AUTHOR_MAX_TOKENS`, `_DIGEST_MAX_CHARS_PER_REPO`, and `_MAX_EXCERPT_FILES` are sized for your platform.
+  </Step>
+  <Step title="Run, then review">
+    After the run, call `meter.finalize()` and `render_usage_md(...)`. Read the cost-sorted, per-stage breakdown.
+  </Step>
+  <Step title="Tune the dominant stage">
+    Whichever `(model, stage)` line costs the most is your next target — lower its cap, trim its input, or move it to a cheaper model, then re-run and compare.
+  </Step>
+</Steps>
+
+<Warning>
+  Keep `PRICING` current. The table is a built-in estimate keyed by model-id prefix; update it whenever Anthropic rates change so your monitoring stays meaningful. The `RunUsage.estimated` flag will remain `True` regardless — these figures are guidance, not your invoice.
+</Warning>

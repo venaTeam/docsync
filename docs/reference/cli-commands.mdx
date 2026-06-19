@@ -1,0 +1,215 @@
+---
+title: CLI Commands Reference
+description: Complete reference for the docsync command-line interface — run, map, index, init, doctor, eval, and bootstrap — including the full set of flags for the run pipeline.
+---
+
+The docsync CLI is the engine that keeps documentation in sync with code changes. It is dogfooded locally and wrapped by `action.yml` in CI. The command-line app is defined in `docsync/src/docsync/cli.py` as a [Typer](https://typer.tiangolo.com/) application:
+
+```python
+app = typer.Typer(add_completion=False, help="Keep documentation in sync with code changes.")
+```
+
+<Note>
+Shell completion is disabled (`add_completion=False`). Invoke commands as `docsync <command> [OPTIONS]`.
+</Note>
+
+## Commands at a glance
+
+<CardGroup cols={2}>
+  <Card title="run" icon="play">
+    Full pipeline: `diff → impact → edits → validate → (PR | patch + report)`.
+  </Card>
+  <Card title="map" icon="map">
+    Impact mapping only — no LLM edits. Cheap, dry inspection of which pages a change touches.
+  </Card>
+  <Card title="index" icon="layer-group">
+    Build or refresh the embeddings index (the optional recall-net).
+  </Card>
+  <Card title="doctor" icon="stethoscope">
+    Pre-flight the manifest; report doc pages it references that no longer exist.
+  </Card>
+  <Card title="init" icon="seedling">
+    Scaffold docsync configuration into a docs repo.
+  </Card>
+  <Card title="bootstrap" icon="rocket">
+    Bootstrap helpers for a fresh setup.
+  </Card>
+  <Card title="eval" icon="flask">
+    Evaluation harness for docsync output.
+  </Card>
+</CardGroup>
+
+---
+
+## `docsync run`
+
+Runs the full pipeline: compute the diff, map impact onto doc pages, generate edits, validate them, and then either open a PR or emit a patch and report.
+
+```bash
+docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
+```
+
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--docs-repo` | `Path` | **required** | Path to the docs repo checkout. |
+| `--src-repo` | `str` | `None` | Service repo: a local path or a GitHub `owner/name`. Omit when using `--from-event`. |
+| `--base` | `str` | `None` | Base ref/sha (before). Omit with `--from-event`. |
+| `--head` | `str` | `None` | Head ref/sha (after). Omit with `--from-event`. |
+| `--from-event` | `Path` | `None` | GitHub event JSON (the CI `$GITHUB_EVENT_PATH`): derive repo/base/head/PR automatically. Auto-detected from `$GITHUB_EVENT_PATH` when no flags are given. |
+| `--pr-number` | `int` | `None` | PR number associated with the change. |
+| `--pr-title` | `str` | `None` | PR title associated with the change. |
+| `--dry-run` / `--no-dry-run` | `bool` | `True` | Compute + report only; do not write or open a PR. |
+| `--open-pr` / `--no-open-pr` | `bool` | `False` | Branch, commit, push, and open a docs PR. |
+| `--use-embeddings` / `--no-use-embeddings` | `bool` | `True` | Embeddings recall-net: also surface drift on pages the manifest doesn't anchor. Degrades to anchors-only if the embeddings extra isn't installed. |
+| `--check-links` / `--no-check-links` | `bool` | `False` | Run the mintlify broken-link soft gate. |
+| `--self-critique` / `--no-self-critique` | `bool` | `False` | Adversarially re-check each generated edit against the diff (adds a judge-model call per page) and drop edits not justified by the change. |
+| `--min-confidence` | `float` | `None` | Skip the edit stage for pages below this impact confidence (0–1). Overrides `config.min_edit_confidence`; use for a conservative first rollout. |
+| `--max-pages` | `int` | `None` | Cap pages sent to the edit stage (highest-confidence first; the rest are reported, not edited). Overrides `config.max_pages_per_run`. |
+| `--max-parallel` | `int` | `None` | Max concurrent LLM requests for the judge + edit stages. Overrides `config.max_parallel_requests`. |
+| `--preflight` / `--no-preflight` | `bool` | `True` | Pre-flight the manifest (doctor) and abort before any LLM spend if it references doc pages that don't exist. `--no-preflight` to bypass. |
+| `--report-path` | `Path` | `None` | Write the PR-body markdown here. |
+| `--backend` | `str` | `"api"` | LLM backend: `api` (uses `ANTHROPIC_API_KEY`) or `claude-code` (dev: reuse the local Claude Code CLI auth, no API key). |
+
+### How the diff source is resolved
+
+`run` selects its diff source with a strict precedence (`_resolve_diff`):
+
+<Steps>
+  <Step title="Explicit --from-event">
+    If `--from-event` is passed, the diff is derived from that GitHub event JSON.
+  </Step>
+  <Step title="Auto-detected $GITHUB_EVENT_PATH">
+    When no explicit `--src-repo`/`--base`/`--head` flags are given, docsync falls back to the `GITHUB_EVENT_PATH` environment variable — the typical CI path, where no flags are needed.
+  </Step>
+  <Step title="Explicit flags">
+    Otherwise, all of `--src-repo`, `--base`, and `--head` must be provided. `--src-repo` is treated as a local checkout when the path exists and contains a `.git` directory; otherwise it is treated as a GitHub `owner/name`.
+  </Step>
+</Steps>
+
+<Warning>
+If none of those conditions are met, the command raises a `BadParameter` error:
+
+> provide `--from-event` (or run in CI with `$GITHUB_EVENT_PATH` set), or all of `--src-repo` / `--base` / `--head`.
+</Warning>
+
+### Execution flow
+
+1. **Load config + manifest** from the docs repo. `--max-parallel`, if set, overrides `config.max_parallel_requests`.
+2. **Preflight gate** (when `--preflight`): runs `doctor`. If the manifest references missing pages, the command prints each offending page and exits **before any LLM spend**.
+3. **Resolve the LLM client** for the chosen `--backend`.
+4. **Resolve the diff** (see above).
+5. **Idempotency check**: if `diff.repo@diff.head_sha` was already processed, the run is skipped.
+6. **Run the pipeline** (impact → edits → validate), snapshotting original page text for the diff preview.
+7. **Report**: print a console summary; build the PR body. With `--report-path`, the PR-body markdown is written there.
+8. **Apply / emit**: depending on `--dry-run` / `--open-pr`, either do nothing, open a PR, or write a patch.
+
+### Exit codes
+
+| Code | When |
+|------|------|
+| `0` | No validated changes to open, the change was already processed, or it was a dry run with nothing applied. |
+| `2` | Preflight failed — the manifest references one or more missing doc pages. |
+
+<Tabs>
+  <Tab title="Dry run (default)">
+    ```bash
+    docsync run --docs-repo ./docs --src-repo owner/svc --base main --head feature
+    ```
+    Computes impact and edits, prints a summary, and writes nothing. The CLI reminds you:
+
+    > docsync: dry run — not writing changes. Use `--no-dry-run` / `--open-pr` to apply.
+  </Tab>
+  <Tab title="Open a PR">
+    ```bash
+    docsync run --docs-repo ./docs --from-event "$GITHUB_EVENT_PATH" --no-dry-run --open-pr
+    ```
+    Writes the validated pages, advances the processing cursor, then branches, commits, pushes, and opens a docs PR titled `docs: sync with <repo>` (with the PR number appended when known). Reviewers and labels come from `config.reviewers` and `config.pr_labels`.
+  </Tab>
+  <Tab title="Write a patch">
+    ```bash
+    docsync run --docs-repo ./docs --src-repo owner/svc --base main --head dev --no-dry-run
+    ```
+    With changes applied but `--open-pr` not set, docsync writes the changes and emits a patch file at `docsync.patch` inside the docs repo.
+  </Tab>
+</Tabs>
+
+#### Conservative first rollout
+
+```bash
+docsync run --docs-repo ./docs --from-event "$GITHUB_EVENT_PATH" \
+  --min-confidence 0.7 --max-pages 5 --self-critique
+```
+
+This edits only high-confidence pages (≥ 0.7), caps the edit stage at the 5 highest-confidence pages (the rest are reported, not edited), and adds an adversarial self-critique pass that drops edits not justified by the diff.
+
+---
+
+## `docsync map`
+
+Impact mapping only — **no LLM edits**. This is the cheap, dry way to inspect which documentation pages a code change would touch, using the manifest's anchors and (optionally) the embeddings recall-net.
+
+It draws on the impact helpers `find_anchor_candidates` and `find_embedding_candidates`:
+
+| Helper | Role |
+|--------|------|
+| `find_anchor_candidates` | Match changed code against manifest anchors. |
+| `find_embedding_candidates` | Surface additional candidate pages via the embeddings index (recall-net). |
+
+<Note>
+Use `map` to validate your manifest and preview impact before paying for an LLM run with `docsync run`.
+</Note>
+
+---
+
+## `docsync index`
+
+Builds or refreshes the embeddings index — the optional recall-net that lets `run` and `map` surface drift on pages the manifest doesn't explicitly anchor.
+
+<Note>
+The embeddings path degrades gracefully: if the embeddings extra isn't installed, docsync falls back to anchors-only behavior.
+</Note>
+
+---
+
+## `docsync doctor`
+
+Pre-flights the manifest and reports any doc pages it references that no longer exist on disk. This is the same check `run` performs under `--preflight`.
+
+A missing page silently disables its anchor — a missed doc update would otherwise read as "no drift" — so `doctor` catches the problem up front. When the report contains `missing_pages`, the offending pages are listed and the preflight is treated as a failure.
+
+<Warning>
+If `doctor` flags missing pages, fix `.docsync/manifest.yml` (or restore the page) before running the pipeline. To bypass the gate during a `run`, pass `--no-preflight`.
+</Warning>
+
+---
+
+## `docsync init`
+
+Scaffolds docsync configuration into a docs repo so the manifest and config files are in place for subsequent `map` / `run` invocations.
+
+---
+
+## `docsync bootstrap`
+
+Bootstrap helpers (backed by the `bootstrap` module) for standing up docsync in a repository.
+
+---
+
+## `docsync eval`
+
+Evaluation harness for assessing docsync's output.
+
+---
+
+## Environment variables
+
+| Variable | Used by | Purpose |
+|----------|---------|---------|
+| `GITHUB_EVENT_PATH` | `run` | CI-provided path to the GitHub event JSON; auto-detected to derive repo/base/head/PR when no diff flags are passed. |
+| `ANTHROPIC_API_KEY` | `run` (`--backend api`) | API key for the default `api` LLM backend. |
+
+<Note>
+With `--backend claude-code`, docsync reuses the local Claude Code CLI authentication, so no `ANTHROPIC_API_KEY` is required — intended for local development.
+</Note>

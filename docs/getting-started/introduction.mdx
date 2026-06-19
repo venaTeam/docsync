@@ -1,0 +1,120 @@
+---
+title: "Welcome to docsync"
+description: "Plan, author, and synchronize a developer documentation site directly from your live source code, with an LLM running in CI."
+---
+
+docsync keeps documentation in sync with code changes via an LLM, in CI. It reads your source repositories, plans an information architecture, authors full pages, and opens a pull request — so your docs track the code instead of drifting from it.
+
+<Note>
+  This page covers docsync **0.1.0**. The examples below reflect the commands and pipeline stages defined in the source; flags not shown here are out of scope for this guide.
+</Note>
+
+## What docsync does
+
+docsync has two complementary entry points:
+
+<CardGroup cols={2}>
+  <Card title="docsync bootstrap" icon="seedling">
+    From-scratch generation. Authors a **structured, sequenced docs site** from a whole-platform snapshot when you have no docs yet.
+  </Card>
+  <Card title="docsync run" icon="arrows-rotate">
+    The update pipeline. Edits **existing** pages from a code diff, keeping pages live as the code changes.
+  </Card>
+</CardGroup>
+
+The rest of this guide focuses on `bootstrap`, since that is how you create your docs site the first time.
+
+## How a site is planned
+
+Rather than emit a flat list of API pages, docsync plans a real reading flow. Pages are organized into ordered **sections** and assigned a **kind**:
+
+<CardGroup cols={3}>
+  <Card title="guide" icon="map">
+    Task-oriented onboarding — Getting Started, how-to, setup and run instructions. (This page is a guide.)
+  </Card>
+  <Card title="concept" icon="book-open">
+    Narrative explanations of a subsystem or cross-service flow — Concepts, Architecture, data flow. Prose, not API tables.
+  </Card>
+  <Card title="reference" icon="code">
+    Code-anchored API and data-model pages, under Reference.
+  </Card>
+</CardGroup>
+
+Sections follow a deliberate order — Getting Started → Concepts → Architecture → Reference → Operations. Every page anchors to **real source code** through one or more `sources` entries (a `repo`, `globs`, and optional `symbols`):
+
+- **Reference pages** anchor to specific files and symbols.
+- **Concept and guide pages** anchor to broader globs over the subsystem(s) they describe, with few or no symbols.
+
+Narrative pages also carry `judge_required`, so `docsync run` keeps them live without firing an edit on every unrelated change.
+
+## The bootstrap pipeline
+
+`docsync bootstrap` runs a fixed sequence of stages:
+
+<Steps>
+  <Step title="B1 — Ingest">
+    Walk each repository read-only into a `RepoDigest` (files plus their top-level symbols).
+  </Step>
+  <Step title="B2 — Plan">
+    A single judge-model call produces a sectioned, ordered `DocPlan`, then docsync dedupes collisions against pages and routes that already exist.
+  </Step>
+  <Step title="B3 — Author">
+    Full MDX is authored per page with a kind-specific prompt, in parallel and metered for cost.
+  </Step>
+  <Step title="B4 — Validate">
+    Each new page passes `validate_new_page` — absolute gates, since there is no original page to diff against.
+  </Step>
+  <Step title="B5 — Emit">
+    Files are written along with ordered navigation sections and manifest anchors.
+  </Step>
+  <Step title="B6 — Pull request">
+    The CLI opens a PR with the generated site.
+  </Step>
+</Steps>
+
+<Note>
+  Every LLM call goes through an injectable `client` wrapped in a `MeteredClient`, so the token cost of a run lands on `result.usage`.
+</Note>
+
+## Page paths and routes
+
+Planned pages are placed under a section folder using kebab-case `.mdx` paths, for example:
+
+```text
+getting-started/introduction.mdx
+architecture/data-flow.mdx
+reference/alerts.mdx
+```
+
+docsync normalizes these paths and derives navigation routes from them:
+
+- A page path is cleaned to be docs-root-relative, with no leading slash and a `.mdx` (or `.md`) extension.
+- The nav **route** is the same path with its extension stripped — so `getting-started/introduction.mdx` becomes the route `getting-started/introduction`.
+
+<Warning>
+  docsync will not propose a page whose path or route already exists, and it drops duplicate paths during planning. Existing `.mdx`/`.md` files under the docs root (anything outside `.docsync`) are treated as already taken, and colliding plan entries are reported as **skipped**.
+</Warning>
+
+## Tuning the plan
+
+Two controls shape how much docsync generates:
+
+<Tabs>
+  <Tab title="Page count">
+    `plan_docs` accepts an optional `max_pages`, which caps the number of pages **after** dedupe. Leave it unset to author the full deduped plan.
+  </Tab>
+  <Tab title="Context limits">
+    To keep a large platform from overflowing the planner's context, the digest handed to the planner is capped per repo, and a page's author prompt excerpts only a bounded number of source files. Repos with more files than the cap show a truncation note in the digest.
+  </Tab>
+</Tabs>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Keep docs in sync" icon="arrows-rotate">
+    After bootstrapping, run the update pipeline (`docsync run`) so pages are edited from code diffs as your repositories change.
+  </Card>
+  <Card title="Review the PR" icon="code-pull-request">
+    Bootstrap finishes by opening a pull request — review the generated sections, navigation order, and manifest anchors before merging.
+  </Card>
+</CardGroup>

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Documentation",
+  "colors": {
+    "primary": "#16A34A",
+    "light": "#16A34A",
+    "dark": "#16A34A"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "getting-started/introduction",
+          "getting-started/quick-start",
+          "getting-started/installation",
+          "getting-started/basic-workflow",
+          "getting-started/your-first-project"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/how-docsync-works",
+          "concepts/code-ingestion",
+          "concepts/documentation-planning",
+          "concepts/page-kinds-sections",
+          "concepts/authoring-pipeline",
+          "concepts/embedding-search",
+          "concepts/configuration",
+          "concepts/change-detection",
+          "concepts/quality-assessment",
+          "concepts/multi-repo-strategies"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "pages": [
+          "architecture/system-overview",
+          "architecture/data-flow",
+          "architecture/ingestion-engine",
+          "architecture/planning-engine",
+          "architecture/llm-integration"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/cli-commands",
+          "reference/config-schema",
+          "reference/models-data-structures",
+          "reference/page-format",
+          "reference/doc-adapters",
+          "reference/api-cost-tracking",
+          "reference/event-schema",
+          "reference/critique-rules"
+        ]
+      },
+      {
+        "group": "Operations",
+        "pages": [
+          "operations/ci-cd-integration",
+          "operations/monitoring-troubleshooting",
+          "operations/cost-optimization"
+        ]
+      }
+    ]
+  }
+}

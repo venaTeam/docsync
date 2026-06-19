@@ -1,0 +1,193 @@
+---
+title: "The Documentation Workflow"
+description: "Follow docsync end to end — ingest source repos, plan an information architecture, author and edit pages, validate them, and publish a docs PR."
+---
+
+docsync keeps a documentation site in step with the code it describes. It has two entry points that share the same backbone — **ingest → generate → validate → publish** — but solve different problems:
+
+- **`docsync bootstrap`** authors a *new, structured docs site* from a whole-platform snapshot when you have no docs yet.
+- **`docsync run`** edits *existing* pages surgically from a single code diff, so docs follow commits.
+
+Both run through one injectable LLM `client` (wrapped so token usage and estimated cost land on the result), and neither writes to git until you ask it to.
+
+<CardGroup cols={2}>
+  <Card title="Bootstrap a site" icon="seedling">
+    Plan a sectioned site (Getting Started → Concepts → Architecture → Reference → Operations) and author every page from scratch.
+  </Card>
+  <Card title="Keep docs in sync" icon="arrows-rotate">
+    Map a code diff to impacted pages, generate validated edits, and open a docs PR.
+  </Card>
+</CardGroup>
+
+## How the pipeline is staged
+
+`docsync run` is a six-stage pipeline. Stages 1–2 and 6 live in the CLI and `pr.py`; the pure core (stages 3–5) lives in `pipeline.py`:
+
+```
+Stage 1  event capture   (CLI: GitHub event or flags)
+Stage 2  diff extraction  (CLI: diff_local / diff_github)
+Stage 3  impact mapping   (map_impact → impacted pages)
+Stage 4  edit generation  (surgical str-replace edits, optional self-critique)
+Stage 5  validation       (validate_page; drop edits that don't pass)
+Stage 6  publish          (PR, or a patch + report)
+```
+
+`docsync bootstrap` runs the from-scratch equivalent — it plans an architecture instead of mapping a diff:
+
+```
+B1 ingest    RepoDigest per repo (read-only walk)
+B2 plan      DocPlan: an ordered, sectioned IA (one judge-model call) + dedupe
+B3 author    full MDX per page, kind-specific prompt (parallel, metered)
+B4 validate  validate_new_page (absolute gates — no original to diff)
+B5 emit      write files + ordered nav sections + manifest anchors
+B6 PR        open the docs PR
+```
+
+<Note>
+Pages are planned as **sections** with three page **kinds** — `guide` (task-oriented onboarding), `concept` (narrative subsystem/data-flow prose), and `reference` (code-anchored API/data-model pages). Narrative pages anchor to broad subsystem globs and carry `judge_required`, so `docsync run` keeps them live without firing an edit on every unrelated change.
+</Note>
+
+## Before you start
+
+You need a docs repo checkout and a way for the LLM calls to authenticate. Pick a backend with `--backend`:
+
+<Tabs>
+  <Tab title="API key">
+    The default backend (`--backend api`) reads `ANTHROPIC_API_KEY`:
+
+    ```bash
+    export ANTHROPIC_API_KEY=sk-ant-...
+    ```
+  </Tab>
+  <Tab title="Local Claude Code">
+    For local development, `--backend claude-code` reuses your Claude Code CLI auth and needs no API key:
+
+    ```bash
+    docsync run --docs-repo ./docs --backend claude-code ...
+    ```
+  </Tab>
+</Tabs>
+
+## Generate a site from scratch
+
+<Steps>
+  <Step title="Ingest the source repos">
+    docsync walks each repo read-only and builds a `RepoDigest` — a per-repo listing of files and their top-level symbols. This digest is capped per repo so a large platform can't overflow the planner's context.
+  </Step>
+  <Step title="Plan the information architecture">
+    A single judge-model call produces a `DocPlan`: an ordered, sectioned set of pages, each with a `page_path`, `title`, `kind`, `section`, `order`, a one-sentence summary, and `sources` anchoring it to real code. docsync then **dedupes** any page whose path or route collides with an existing page or an earlier plan entry, and caps the total with `max_pages`.
+
+    <Warning>
+      The planner is explicitly told never to propose a page whose path or route already exists, and every page must anchor to at least one real repo from the digest. Colliding pages are dropped and reported as `skipped`.
+    </Warning>
+  </Step>
+  <Step title="Author the pages">
+    Each planned page is authored into full MDX with a kind-specific prompt, in parallel. Every call is metered, so cost accrues on the run's usage.
+  </Step>
+  <Step title="Validate and emit">
+    New pages pass through `validate_new_page` — absolute gates, since there is no original to diff against. Surviving pages are written to disk along with ordered nav sections and manifest anchors, then opened as a PR.
+  </Step>
+</Steps>
+
+## Keep docs in sync with a diff
+
+This is the path you'll wire into CI. By default it is a **dry run** — it computes and reports without writing anything.
+
+<Steps>
+  <Step title="Point docsync at a diff">
+    In CI, the only thing wired up is the GitHub event JSON. docsync resolves the diff source in priority order: explicit `--from-event` → explicit `--src-repo/--base/--head` flags → the `$GITHUB_EVENT_PATH` environment variable.
+
+    <Tabs>
+      <Tab title="Local checkout / GitHub repo">
+        ```bash
+        docsync run \
+          --docs-repo ./docs \
+          --src-repo ./keep-api-gateway \
+          --base main --head HEAD
+        ```
+
+        If `--src-repo` is an existing path with a `.git` directory, docsync diffs the local checkout; otherwise it treats the value as a GitHub `owner/name`.
+      </Tab>
+      <Tab title="From a CI event">
+        ```bash
+        docsync run \
+          --docs-repo ./docs \
+          --from-event "$GITHUB_EVENT_PATH"
+        ```
+
+        Repo, base, head, and PR number/title are derived from the event automatically — no other flags needed. When no diff flags are given at all, `$GITHUB_EVENT_PATH` is auto-detected.
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Pass preflight and the processed-cursor check">
+    Before any LLM spend, preflight runs the manifest **doctor**. If the manifest references doc pages that no longer exist, the run aborts with exit code `2` — a missing anchored page would otherwise silently read as "no drift."
+
+    ```text
+    docsync: preflight failed — manifest references missing page(s):
+      ✗ reference/alerts.mdx
+    Fix .docsync/manifest.yml (or restore the page); rerun with --no-preflight to bypass.
+    ```
+
+    docsync also skips a diff it has already processed (matched by repo + head SHA), exiting `0`.
+
+    <Warning>
+      `--no-preflight` bypasses the manifest gate. Only do this when you understand why a referenced page is missing.
+    </Warning>
+  </Step>
+
+  <Step title="Generate, critique, and validate edits">
+    For each impacted page, docsync generates **surgical string-replace edits** against the original. Pages are processed highest-confidence first, concurrently (bounded by `--max-parallel` / `config.max_parallel_requests`). Each page then runs validation; an edit that fails validation, that can't be applied, or that produces no edits is **dropped** with a recorded note rather than written.
+
+    Two optional gates tighten this further:
+
+    - `--self-critique` adversarially re-checks each generated edit against the diff (one extra judge-model call per page) and drops edits the change doesn't justify.
+    - `--min-confidence <0-1>` skips the edit stage entirely for pages below that impact confidence, overriding the configured floor — useful for a conservative first rollout.
+
+    <Note>
+      `--use-embeddings` (on by default) is a recall-net that also surfaces drift on pages the manifest doesn't anchor. It degrades gracefully to anchors-only if the embeddings extra isn't installed. `--max-pages` caps how many pages reach the (expensive) edit stage; the rest are reported, not edited.
+    </Note>
+  </Step>
+
+  <Step title="Review the report, then publish">
+    A dry run prints a console summary and can write the PR-body markdown with `--report-path`. When you're ready to apply changes, choose how to publish:
+
+    <Tabs>
+      <Tab title="Open a PR">
+        ```bash
+        docsync run --docs-repo ./docs --from-event "$GITHUB_EVENT_PATH" \
+          --no-dry-run --open-pr
+        ```
+
+        docsync writes the validated pages, advances the processed cursor, then branches, commits, pushes, and opens a docs PR (with the configured reviewers and labels).
+      </Tab>
+      <Tab title="Write a patch">
+        ```bash
+        docsync run --docs-repo ./docs --from-event "$GITHUB_EVENT_PATH" \
+          --no-dry-run
+        ```
+
+        Without `--open-pr`, docsync writes the changes and emits a `docsync.patch` file you can apply or review yourself.
+      </Tab>
+    </Tabs>
+
+    If there are no validated changes, docsync reports it and exits without opening anything.
+  </Step>
+</Steps>
+
+## Inspect without spending
+
+Two commands let you understand a run cheaply before committing to LLM edits:
+
+<CardGroup cols={2}>
+  <Card title="docsync map" icon="map">
+    Impact mapping only — see which pages a diff would touch, with no LLM edits. A cheap dry inspection.
+  </Card>
+  <Card title="docsync index" icon="database">
+    Build or refresh the embeddings index that powers the optional recall-net for `docsync run`.
+  </Card>
+</CardGroup>
+
+<Note>
+`docsync run` defaults to `--dry-run` for a reason: it computes the full report and shows you what *would* change before anything is written. Add `--no-dry-run` (optionally with `--open-pr`) only once the report looks right.
+</Note>
