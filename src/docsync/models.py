@@ -433,3 +433,71 @@ class BootstrapResult(BaseModel):
     def authored(self) -> list[PageOutcome]:
         """Pages that were authored, validated, and are ready to write."""
         return [o for o in self.outcomes if o.applied and o.new_content is not None]
+
+
+# ---------------------------------------------------------------------------
+# Manifest inference (infer.py) — the brownfield analogue of bootstrap
+# ---------------------------------------------------------------------------
+
+
+class InferredSource(BaseModel):
+    """One proposed code anchor for an existing page (the judge's raw proposal)."""
+
+    repo: str  # must match one of the ingested RepoDigest.repo ids
+    globs: list[str] = Field(default_factory=list)  # fnmatch globs over repo-relative paths
+    symbols: list[str] = Field(default_factory=list)  # symbol names (trailing * = prefix)
+
+
+class InferredAnchors(BaseModel):
+    """The judge's structured output: anchors for one existing doc page.
+
+    `kind` drives `judge_required` downstream (concept/guide route through the judge so
+    their broad anchors don't over-trigger Opus edits). `confidence` gates whether the
+    anchors are written: below `judge_confidence_threshold` the page is reported, not
+    anchored.
+    """
+
+    page_path: str
+    # `confidence` is required (no default) on purpose: it keeps the model from having a
+    # single required str field, which the claude-code backend would mis-route as a
+    # whole-document output (stuffing the raw JSON into `page_path`). The judge is asked
+    # for a calibrated confidence on every page regardless.
+    confidence: float = Field(ge=0.0, le=1.0)
+    sources: list[InferredSource] = Field(default_factory=list)
+    kind: PageKind = "reference"
+    reason: str = ""
+
+
+InferStatus = Literal["anchored", "low_confidence", "no_match"]
+
+
+class InferredPage(BaseModel):
+    """Post-validation result for one page (internal — not an LLM output).
+
+    `sources` here are sanitized `ManifestSource`s: every glob matched >=1 real file and
+    every symbol appears in the matched code, so an `anchored` page passes `doctor` as-is.
+    """
+
+    page_path: str
+    sources: list[ManifestSource] = Field(default_factory=list)
+    kind: PageKind = "reference"
+    confidence: float = 0.0
+    status: InferStatus = "no_match"
+    reason: str = ""
+
+    @property
+    def judge_required(self) -> bool:
+        """Narrative pages (concept/guide) route through the judge when updated."""
+        return self.kind in ("concept", "guide")
+
+
+class InferResult(BaseModel):
+    """End-to-end result of `docsync infer` over an existing docs site."""
+
+    pages: list[InferredPage] = Field(default_factory=list)
+    skipped_already_anchored: list[str] = Field(default_factory=list)
+    usage: Optional[RunUsage] = None
+
+    def anchored(self) -> list[InferredPage]:
+        """Pages with validated anchors, ready to merge into the manifest."""
+        return [p for p in self.pages if p.status == "anchored"]
