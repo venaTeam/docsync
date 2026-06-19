@@ -109,6 +109,8 @@ When the cap is hit, the listing is truncated with an explicit `… (N files in 
 
 This is what makes CI "just work": the only thing wired up in a GitHub Action is the event JSON, so repo / base / head / PR are derived from it automatically with no flags. Locally, `_build_diff` decides between a local checkout (`diff_local`, when `src_repo` is a path containing `.git`) and a GitHub fetch (`diff_github`).
 
+A manual run that passes `--src-repo` and `--head` but omits `--base` falls back to the stored cursor: `_base_or_cursor` resolves the last `head_sha` docsync processed for that repo (matched by `_repo_key` normalization, so a bare name still matches an `owner/name` cursor) and uses it as the "since last sync" base — raising a `BadParameter` when no cursor exists yet. The `map` command shares this fallback.
+
 ### 4 · Impact mapping (update flow only)
 
 Given a diff, docsync must decide *which pages could be affected*. Two complementary strategies feed the candidate list (see `impact.find_anchor_candidates` and `impact.find_embedding_candidates`):

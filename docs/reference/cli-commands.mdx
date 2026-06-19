@@ -55,7 +55,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
 |--------|------|---------|-------------|
 | `--docs-repo` | `Path` | **required** | Path to the docs repo checkout. |
 | `--src-repo` | `str` | `None` | Service repo: a local path or a GitHub `owner/name`. Omit when using `--from-event`. |
-| `--base` | `str` | `None` | Base ref/sha (before). Omit with `--from-event`. |
+| `--base` | `str` | `None` | Base ref/sha (before). Omit with `--from-event`. With an explicit `--src-repo` + `--head` but no `--base`, docsync falls back to the stored cursor (last synced head) for that repo. |
 | `--head` | `str` | `None` | Head ref/sha (after). Omit with `--from-event`. |
 | `--from-event` | `Path` | `None` | GitHub event JSON (the CI `$GITHUB_EVENT_PATH`): derive repo/base/head/PR automatically. Auto-detected from `$GITHUB_EVENT_PATH` when no flags are given. |
 | `--pr-number` | `int` | `None` | PR number associated with the change. |
@@ -84,7 +84,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
     When no explicit `--src-repo`/`--base`/`--head` flags are given, docsync falls back to the `GITHUB_EVENT_PATH` environment variable — the typical CI path, where no flags are needed.
   </Step>
   <Step title="Explicit flags">
-    Otherwise, all of `--src-repo`, `--base`, and `--head` must be provided. `--src-repo` is treated as a local checkout when the path exists and contains a `.git` directory; otherwise it is treated as a GitHub `owner/name`.
+    Otherwise, `--src-repo` and `--head` must be provided. `--base` may be omitted, in which case docsync resolves it from the stored cursor (the last head it synced for that repo); the first run for a repo must pass `--base` explicitly. `--src-repo` is treated as a local checkout when the path exists and contains a `.git` directory; otherwise it is treated as a GitHub `owner/name`.
   </Step>
 </Steps>
 
@@ -149,6 +149,8 @@ This edits only high-confidence pages (≥ 0.7), caps the edit stage at the 5 hi
 ## `docsync map`
 
 Impact mapping only — **no LLM edits**. This is the cheap, dry way to inspect which documentation pages a code change would touch, using the manifest's anchors and (optionally) the embeddings recall-net.
+
+`--base` is optional: omit it to use the stored cursor (the last synced head) for `--src-repo`. The changed-symbols summary is truncated to the first 12 names with a `(+N more)` tail to keep output readable for large diffs.
 
 It draws on the impact helpers `find_anchor_candidates` and `find_embedding_candidates`:
 
