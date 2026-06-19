@@ -118,6 +118,11 @@ def run(
     if max_parallel is not None:
         config.max_parallel_requests = max_parallel
 
+    # Cursor-aware base: a manual run with a repo + head but no base diffs from the
+    # last sync point (the stored cursor) instead of erroring on a missing --base.
+    if src_repo and head and not base and not from_event:
+        base = _base_or_cursor(docs_repo, src_repo)
+
     # Pre-flight gate: a manifest page that no longer exists silently disables its
     # anchor (a missed doc update reads as "no drift"). Catch it before any LLM spend.
     if preflight:
@@ -192,6 +197,39 @@ def run(
             typer.echo(f"docsync: patch written to {patch}")
         else:
             typer.echo("docsync: docs repo is not a git repo — skipped patch (changes written).")
+
+
+def _format_symbol_list(symbols: list[str], *, limit: int = 12) -> str:
+    """A compact, readable symbol line: first `limit` names + a (+N more) tail.
+
+    A real diff can touch hundreds of symbols; dumping them all makes `map` output
+    unreadable (and pollutes any captured log). Show the head and summarize the rest.
+    """
+    if not symbols:
+        return "—"
+    shown = symbols[:limit]
+    extra = len(symbols) - len(shown)
+    tail = f", (+{extra} more)" if extra > 0 else ""
+    return ", ".join(shown) + tail
+
+
+def _base_or_cursor(docs_repo: Path, src_repo: str) -> str:
+    """Resolve a base ref from the stored cursor for `src_repo` when --base is omitted.
+
+    The cursor records the last head_sha docsync processed for a repo, so it is the
+    natural "since last sync" base for a manual run. Raises BadParameter when there's
+    no cursor for the repo yet (the first run must pass --base explicitly).
+    """
+    from .impact import _repo_key
+
+    cursors = cfg.load_cursors(docs_repo)
+    key = _repo_key(src_repo)
+    for repo, sha in cursors.items():
+        if _repo_key(repo) == key:
+            return sha
+    raise typer.BadParameter(
+        f"no --base given and no stored cursor for {src_repo!r}; pass --base explicitly."
+    )
 
 
 def _parse_repo_spec(item: str) -> tuple[str, Path]:
@@ -364,9 +402,11 @@ def infer(
 @app.command()
 def map(  # noqa: A001 - intentional command name
     src_repo: str = typer.Option(...),
-    base: str = typer.Option(...),
     head: str = typer.Option(...),
     docs_repo: Path = typer.Option(...),
+    base: Optional[str] = typer.Option(
+        None, help="Base ref (before). Omit to use the stored cursor for this repo."
+    ),
     use_embeddings: bool = typer.Option(False),
 ):
     """Impact mapping only: which pages would be touched, via anchors (+embeddings).
@@ -375,11 +415,15 @@ def map(  # noqa: A001 - intentional command name
     """
     config = cfg.load_config(docs_repo)
     manifest = cfg.load_manifest(docs_repo)
+    base = base or _base_or_cursor(docs_repo, src_repo)
     diff = _build_diff(src_repo, base, head, None, None)
     docs_root = docs_repo / config.docs_root
 
     anchors = find_anchor_candidates(diff, manifest)
-    typer.echo(f"Changed: {len(diff.files)} file(s); symbols: {', '.join(diff.all_symbols()) or '—'}")
+    typer.echo(
+        f"Changed: {len(diff.files)} file(s); "
+        f"symbols: {_format_symbol_list(diff.all_symbols())}"
+    )
     typer.echo(f"Anchor candidates ({len(anchors)}):")
     for c in anchors:
         typer.echo(f"  · {c.page_path}  [score {c.score:.0f}]  {c.reason}")

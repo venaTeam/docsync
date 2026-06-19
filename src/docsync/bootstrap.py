@@ -355,6 +355,10 @@ def run_bootstrap(
         except Exception as exc:  # noqa: BLE001 - one bad page must not abort the pool
             outcome.note = f"author failed: {exc}"
             return outcome
+        # Best-effort repair of safe structural slips (an unclosed <Steps>, a stray
+        # </Note>) before the hard gate — recovers pages that cost real Opus spend.
+        # The repaired text is what we validate and write, so nothing unsafe ships.
+        text = adapter.repair_structure(text)
         validation = validate_new_page(
             planned.page_path, text, adapter,
             check_links=check_links, docs_root=docs_root,
@@ -436,7 +440,13 @@ def write_bootstrap(
         )
     added = merge_manifest_pages(docs_repo, manifest_pages)
 
-    touched = [*written, *sorted(nav_touched)]
+    # Page + nav paths are docs_root-relative; prefix with docs_root so every path
+    # is relative to the docs *repo* root — what pr.open_pr's `git add` expects (the
+    # manifest path already is). A "." docs_root normalises away to a no-op.
+    prefix = Path(config.docs_root)
+    page_rel = [(prefix / p).as_posix() for p in written]
+    nav_rel = [(prefix / n).as_posix() for n in sorted(nav_touched)]
+    touched = [*page_rel, *nav_rel]
     if added:
         touched.append(f".docsync/{MANIFEST_FILE}")
     return touched
