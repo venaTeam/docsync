@@ -170,6 +170,64 @@ def test_benign_body_edit_keeps_components_passing():
 
 
 # ---------------------------------------------------------------------------
+# Hard gate 2 — additive component growth (recovers the recall gap: documenting a
+# new field/stage often means one more balanced <Note>/<Step>/<Card>)
+# ---------------------------------------------------------------------------
+
+_STEPS_BODY = (
+    "# Pipeline\n\n<Steps>\n"
+    '  <Step title="A">do a</Step>\n'
+    '  <Step title="B">do b</Step>\n'
+    "</Steps>\n"
+)
+
+
+def test_adding_a_balanced_note_passes():
+    original = _page_with_frontmatter("Hello", _BODY)
+    new = _page_with_frontmatter("Hello", _BODY + "\n<Note>A new caveat the diff added.</Note>\n")
+    result = validate_page(PAGE, original, new, ManifestPage(path=PAGE), _adapter())
+    assert result.passed, result.failures
+
+
+def test_adding_a_step_to_existing_steps_passes():
+    original = _page_with_frontmatter("Hello", _STEPS_BODY)
+    grown = _STEPS_BODY.replace(
+        "</Steps>", '  <Step title="C">do c (a newly documented stage)</Step>\n</Steps>'
+    )
+    new = _page_with_frontmatter("Hello", grown)
+    result = validate_page(PAGE, original, new, ManifestPage(path=PAGE), _adapter())
+    assert result.passed, result.failures
+
+
+def test_adding_a_card_to_existing_group_passes():
+    original = _page_with_frontmatter("Hello", _BODY)
+    grown = _BODY.replace(
+        "</CardGroup>", '  <Card title="Three" icon="gear">Third card.</Card>\n</CardGroup>'
+    )
+    new = _page_with_frontmatter("Hello", grown)
+    result = validate_page(PAGE, original, new, ManifestPage(path=PAGE), _adapter())
+    assert result.passed, result.failures
+
+
+def test_adding_a_whole_container_still_fails():
+    # A new <Steps> container (not a safe leaf) is a real structural change — reject.
+    original = _page_with_frontmatter("Hello", _BODY)
+    new = _page_with_frontmatter("Hello", _BODY + "\n<Steps>\n  <Step>x</Step>\n</Steps>\n")
+    result = validate_page(PAGE, original, new, ManifestPage(path=PAGE), _adapter())
+    assert not result.passed
+    assert any("Steps" in f for f in result.failures)
+
+
+def test_adding_unbalanced_open_tag_fails():
+    # An extra <Note> with no closing </Note> must not slip through the additive carve-out.
+    original = _page_with_frontmatter("Hello", _BODY)
+    new = _page_with_frontmatter("Hello", _BODY + "\n<Note>dangling open tag\n")
+    result = validate_page(PAGE, original, new, ManifestPage(path=PAGE), _adapter())
+    assert not result.passed
+    assert any("Note" in f for f in result.failures)
+
+
+# ---------------------------------------------------------------------------
 # Hard gate 2 — fence / mermaid balance
 # ---------------------------------------------------------------------------
 
