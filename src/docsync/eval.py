@@ -176,15 +176,19 @@ def _map_actual_pages(
     config: Optional[DocsyncConfig] = None,
     use_embeddings: bool = False,
     cache_dir: Optional[Path] = None,
+    encoder=None,
 ) -> list[str]:
     """mode="map": sorted unique candidate page paths (FREE — no judge/LLM).
 
     Anchors always; with `use_embeddings` also the full-tree recall-net (so the
-    metric reflects unanchored-page recall too).
+    metric reflects unanchored-page recall too). `encoder` is injectable so the
+    recall-net can be measured offline with a fake encoder.
     """
     pages = {c.page_path for c in find_anchor_candidates(diff, manifest)}
     if use_embeddings and docs_root is not None and config is not None:
-        for c in find_embedding_candidates(diff, docs_root, None, config, cache_dir=cache_dir):
+        for c in find_embedding_candidates(
+            diff, docs_root, None, config, cache_dir=cache_dir, encoder=encoder
+        ):
             pages.add(c.page_path)
     return sorted(pages)
 
@@ -221,6 +225,7 @@ def run_eval(
     use_embeddings: bool = False,
     client=None,
     diff_fn: Optional[DiffFn] = None,
+    encoder=None,
 ) -> EvalReport:
     """Run every golden case and score it; return the aggregate :class:`EvalReport`.
 
@@ -257,7 +262,7 @@ def run_eval(
                 actual = _map_actual_pages(
                     diff, manifest,
                     docs_root=docs_root, config=config,
-                    use_embeddings=use_embeddings, cache_dir=cache_dir,
+                    use_embeddings=use_embeddings, cache_dir=cache_dir, encoder=encoder,
                 )
             else:
                 actual = _full_actual_pages(
