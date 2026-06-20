@@ -14,6 +14,10 @@ from pathlib import Path
 
 class DocAdapter(ABC):
     name: str
+    # The extension a NEW page should get when the model/author omits one. Mintlify
+    # uses `.mdx`; a plain-Markdown framework uses `.md`. Used by bootstrap when it
+    # normalizes a proposed page path.
+    page_extension: str = ".mdx"
 
     @abstractmethod
     def owns(self, page_path: str) -> bool:

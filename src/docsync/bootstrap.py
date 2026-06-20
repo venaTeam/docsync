@@ -43,7 +43,8 @@ from .models import (
     RepoDigest,
 )
 from .pool import run_parallel
-from .validate import get_adapter, validate_new_page
+from .adapters import make_adapter
+from .validate import validate_new_page
 
 _PLAN_MAX_TOKENS = 6_000
 _AUTHOR_MAX_TOKENS = 8_000
@@ -58,11 +59,15 @@ _MAX_EXCERPT_FILES = 6
 # ---------------------------------------------------------------------------
 
 
-def _normalize_page_path(page_path: str) -> str:
-    """A clean docs-root-relative `.mdx` path (no leading slash, has an extension)."""
+def _normalize_page_path(page_path: str, default_ext: str = ".mdx") -> str:
+    """A clean docs-root-relative page path (no leading slash, has an extension).
+
+    `default_ext` (the active adapter's `page_extension`) is appended only when the
+    model omitted an extension — an explicit `.md`/`.mdx`/`.markdown` is kept as-is.
+    """
     p = page_path.strip().lstrip("/")
-    if not (p.lower().endswith(".mdx") or p.lower().endswith(".md")):
-        p = f"{p}.mdx"
+    if not p.lower().endswith((".mdx", ".md", ".markdown")):
+        p = f"{p}{default_ext}"
     return p
 
 
@@ -176,7 +181,7 @@ def plan_docs(
     Returns (plan, skipped). `skipped` lists planned page paths dropped for colliding
     with an existing page/route or an earlier plan entry. `max_pages` caps AFTER dedupe.
     """
-    adapter = get_adapter("_.mdx")
+    adapter = make_adapter(config.adapter)
     existing_pages = _existing_page_paths(docs_root)
     existing_routes = adapter.nav_routes(docs_root)
     system, user = build_plan_prompt(
@@ -198,7 +203,7 @@ def plan_docs(
     kept: list[PlannedPage] = []
     skipped: list[str] = []
     for page in raw_plan.pages:
-        path = _normalize_page_path(page.page_path)
+        path = _normalize_page_path(page.page_path, adapter.page_extension)
         route = _route_of(path)
         if path in existing_pages or route in taken_routes:
             skipped.append(path)
@@ -488,7 +493,7 @@ def run_bootstrap(
         result.usage = meter.finalize()
         return result
 
-    adapter = get_adapter("_.mdx")
+    adapter = make_adapter(config.adapter)
 
     def _author_one(planned: PlannedPage) -> PageOutcome:
         """Author + validate one page. Pure w.r.t. shared state; never raises."""
@@ -545,7 +550,7 @@ def write_bootstrap(
     """
     docs_repo = Path(docs_repo)
     docs_root = docs_repo / config.docs_root
-    adapter = get_adapter("_.mdx")
+    adapter = make_adapter(config.adapter)
     by_path = {p.page_path: p for p in result.plan.pages}
 
     written: list[str] = []

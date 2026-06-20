@@ -160,7 +160,7 @@ def run(
                 return outcome
 
             # Stage 5 — validate.
-            adapter = get_adapter(page.page_path)
+            adapter = get_adapter(page.page_path, config.adapter)
             validation = validate_page(
                 page.page_path, original, new_text, manifest_page, adapter,
                 check_links=check_links, docs_root=docs_root,

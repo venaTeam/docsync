@@ -241,6 +241,11 @@ class DocsyncConfig(BaseModel):
 
     models: ModelConfig = Field(default_factory=ModelConfig)
     docs_root: str = "."  # root of the docs tree, relative to the docs repo
+    # Doc-framework adapter that owns the pages (see docsync.adapters.ADAPTERS):
+    # "mintlify" (.mdx + MDX components, docs.json nav) or "markdown" (plain .md,
+    # YAML frontmatter, no nav manifest). Drives frontmatter freeze, structural
+    # integrity, link checks, and the new-page extension.
+    adapter: str = "mintlify"
     # Extra directory names to prune during ingest, on top of ingest.DEFAULT_EXCLUDE_DIRS.
     # Use this to skip repo-specific noise that isn't the product surface you document
     # (e.g. "examples", "deploy", "docs", a generated site dir) so it doesn't inflate

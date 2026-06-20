@@ -15,8 +15,8 @@ import difflib
 from math import ceil
 from pathlib import Path
 
+from docsync.adapters import DEFAULT_ADAPTER, make_adapter
 from docsync.adapters.base import DocAdapter
-from docsync.adapters.mintlify import MintlifyAdapter
 from docsync.models import ManifestPage, ValidationResult
 
 # A rewrite that drops below this fraction of the original character length is
@@ -28,17 +28,18 @@ _TRUNCATION_MIN_RATIO = 0.5
 _NEW_PAGE_MIN_CHARS = 200
 
 
-def get_adapter(page_path: str) -> DocAdapter:
-    """Return the adapter that owns `page_path`.
+def get_adapter(page_path: str, adapter: str = DEFAULT_ADAPTER) -> DocAdapter:
+    """Return the configured `adapter` if it owns `page_path`.
 
-    MVP registry: a single `MintlifyAdapter`. This is the seam where future
-    frameworks register; raising keeps an unsupported page from being silently
-    skipped (the caller treats the ValueError as "no adapter, drop the page").
+    `adapter` is the name from `DocsyncConfig.adapter` (callers with a config thread it
+    through; it defaults to mintlify for back-compat). Raising keeps a page the active
+    adapter doesn't own from being silently skipped — the caller treats the ValueError
+    as "no adapter, drop the page".
     """
-    adapter = MintlifyAdapter()
-    if adapter.owns(page_path):
-        return adapter
-    raise ValueError(f"No adapter owns page: {page_path!r}")
+    resolved = make_adapter(adapter)
+    if resolved.owns(page_path):
+        return resolved
+    raise ValueError(f"adapter {adapter!r} does not own page: {page_path!r}")
 
 
 def validate_page(

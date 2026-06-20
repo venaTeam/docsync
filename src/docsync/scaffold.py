@@ -59,12 +59,13 @@ def _config_template() -> str:
     )
 
 
-def _minimal_config_template(docs_root: str) -> str:
+def _minimal_config_template(docs_root: str, adapter: str = "") -> str:
     """A near-empty config that only pins non-default keys, with a pointer comment.
 
     Everything in :class:`DocsyncConfig` is optional with a sane default, so a minimal
     config need say nothing more than where the docs live (and only when that isn't the
-    repo root). Keeps the onboarding artifact small instead of an 8-field template.
+    repo root) and which framework owns them (only when it isn't the default mintlify).
+    Keeps the onboarding artifact small instead of an 8-field template.
     """
     lines = [
         "# docsync config — only non-default keys are shown.",
@@ -72,6 +73,8 @@ def _minimal_config_template(docs_root: str) -> str:
     ]
     if docs_root and docs_root != ".":
         lines.append(f'docs_root: "{docs_root}"')
+    if adapter and adapter != "mintlify":
+        lines.append(f"adapter: {adapter}")
     return "\n".join(lines) + "\n"
 
 
@@ -82,8 +85,8 @@ def detect_docs_root(docs_repo: Path) -> str:
     """Best-effort guess of `docs_root` (relative to *docs_repo*).
 
     Prefers the directory holding a Mintlify ``docs.json``/``mint.json`` (the adapter
-    manifest); falls back to the common ancestor of the ``.mdx`` tree; defaults to
-    ``"."`` when nothing is found. The ``.docsync`` dir is always ignored.
+    manifest); falls back to the common ancestor of the doc-page tree (``.mdx`` or
+    ``.md``); defaults to ``"."`` when nothing is found. The ``.docsync`` dir is ignored.
     """
     from .adapters.mintlify import _DOCS_JSON, _MINT_JSON
 
@@ -95,7 +98,12 @@ def detect_docs_root(docs_repo: Path) -> str:
             rel = shallowest.parent.relative_to(docs_repo).as_posix()
             return rel or "."
 
-    mdx = [p for p in docs_repo.rglob("*.mdx") if ".docsync" not in p.parts]
+    mdx = [
+        p
+        for ext in ("*.mdx", "*.md")
+        for p in docs_repo.rglob(ext)
+        if ".docsync" not in p.parts
+    ]
     if not mdx:
         return "."
     common = mdx[0].parent.relative_to(docs_repo).parts
@@ -109,16 +117,27 @@ def detect_docs_root(docs_repo: Path) -> str:
 
 
 def detect_adapter(docs_repo: Path, docs_root: str) -> str:
-    """Return the docs adapter name if recognizable from the tree, else ``""``.
+    """Return the docs adapter name recognizable from the tree, else ``""``.
 
-    Only Mintlify ships today; detection is informational (there is no adapter field on
-    :class:`DocsyncConfig`) — surfaced as a comment/echo so the adopter sees what was found.
+    A Mintlify `docs.json`/`mint.json` (or an `.mdx` tree) ⇒ ``"mintlify"``; a Docusaurus
+    config or an `.md`-only tree ⇒ ``"markdown"`` (the plain-Markdown adapter). The result
+    seeds `DocsyncConfig.adapter` in a `--minimal` init and is echoed to the adopter.
     """
     from .adapters.mintlify import _DOCS_JSON, _MINT_JSON
 
     root = Path(docs_repo) / docs_root
     if (root / _DOCS_JSON).exists() or (root / _MINT_JSON).exists():
         return "mintlify"
+    if (root / "docusaurus.config.js").exists() or (root / "docusaurus.config.ts").exists():
+        return "markdown"
+
+    def _tree(ext: str) -> bool:
+        return any(".docsync" not in p.parts for p in root.rglob(ext))
+
+    if _tree("*.mdx"):
+        return "mintlify"
+    if _tree("*.md"):
+        return "markdown"
     return ""
 
 
@@ -178,8 +197,11 @@ def init_docs_repo(
         root = docs_root if docs_root is not None else (
             detect_docs_root(docs_repo) if detect else "."
         )
+        # Seed the adapter too when detecting, so a non-mintlify site is configured
+        # without the adopter having to know the field exists.
+        adapter = detect_adapter(docs_repo, root) if detect else ""
         artifacts: list[tuple[Path, str]] = [
-            (config_path, _minimal_config_template(root)),
+            (config_path, _minimal_config_template(root, adapter)),
             (cursors_path, "{}\n"),
         ]
     else:

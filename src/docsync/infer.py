@@ -37,9 +37,9 @@ from .models import (
     ManifestSource,
     RepoDigest,
 )
+from .adapters import make_adapter
 from .pool import run_parallel
 from .scaffold import _read_corpus
-from .validate import get_adapter
 
 # Plenty for one page's structured anchors; the judge output is small.
 _INFER_MAX_TOKENS = 1_500
@@ -292,7 +292,7 @@ def run_infer(
         digests, cache_dir, model_name=config.embedding_model, encoder=encoder
     )
 
-    adapter = get_adapter("_.mdx")
+    adapter = make_adapter(config.adapter)
 
     def _infer_one(page_path: str) -> InferredPage:
         """Shortlist → judge → validate one page. Never raises (pool-safe)."""

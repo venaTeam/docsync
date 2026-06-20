@@ -77,7 +77,10 @@ def run(
         help="Embeddings recall-net: also surface drift on pages the manifest doesn't "
         "anchor. Degrades to anchors-only if the embeddings extra isn't installed.",
     ),
-    check_links: bool = typer.Option(False, help="Run the mintlify broken-link soft gate."),
+    check_links: bool = typer.Option(
+        False, help="Run the active adapter's broken-link soft gate (no-op for adapters "
+        "without a link checker, e.g. plain markdown)."
+    ),
     self_critique: Optional[bool] = typer.Option(
         None,
         "--self-critique/--no-self-critique",
@@ -285,7 +288,10 @@ def bootstrap(
         None, help="Max concurrent author requests. Overrides config.max_parallel_requests."
     ),
     force: bool = typer.Option(False, help="Overwrite existing page files (default: skip)."),
-    check_links: bool = typer.Option(False, help="Run the mintlify broken-link soft gate."),
+    check_links: bool = typer.Option(
+        False, help="Run the active adapter's broken-link soft gate (no-op for adapters "
+        "without a link checker, e.g. plain markdown)."
+    ),
     polish: Optional[bool] = typer.Option(
         None,
         "--polish/--no-polish",
@@ -570,7 +576,8 @@ def init(
         "(no placeholder manifest).",
     ),
     detect: bool = typer.Option(
-        True, help="With --minimal, auto-detect docs_root from docs.json / the .mdx tree."
+        True, help="With --minimal, auto-detect docs_root + adapter from the docs config "
+        "(docs.json / docusaurus.config.js) or the .mdx/.md tree."
     ),
     infer: bool = typer.Option(
         False,
