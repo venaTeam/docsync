@@ -119,11 +119,32 @@ def _repo_units(digests: list[RepoDigest]) -> dict[str, tuple[str, list[str]]]:
 # ---------------------------------------------------------------------------
 
 
+# Per-thoroughness IA size targets — how big a site to plan. Light = the essential
+# spine; high = a page per significant subsystem/API. The planner is otherwise free.
+_PLAN_SIZE_TARGET: dict[str, str] = {
+    "light": (
+        "Keep the site SMALL and essential: roughly 3-6 pages covering only the core "
+        "reading flow (an introduction, the key concepts, and the most important "
+        "reference). Don't enumerate every module."
+    ),
+    "medium": (
+        "Aim for a focused site: roughly 7-15 pages covering the primary subsystems and "
+        "the main reference surface, with a coherent reading flow."
+    ),
+    "high": (
+        "Be COMPREHENSIVE: author a page per significant subsystem, service, and "
+        "public API/data-model, plus the narrative concept/architecture pages that tie "
+        "them together. Favor complete coverage over brevity."
+    ),
+}
+
+
 def build_plan_prompt(
     digests: list[RepoDigest],
     *,
     existing_routes: list[str],
     existing_pages: set[str],
+    thoroughness: str = "medium",
 ) -> tuple[str, str]:
     """Return (system, user) for the IA planner call (a sectioned, ordered site)."""
     repos = ", ".join(d.repo for d in digests)
@@ -133,6 +154,7 @@ def build_plan_prompt(
             "You are a senior technical writer planning a complete developer "
             "documentation SITE for a software platform that currently has no docs.",
             f"The platform spans these source repos: {repos}.",
+            _PLAN_SIZE_TARGET.get(thoroughness, _PLAN_SIZE_TARGET["medium"]),
             "Design an information architecture with a real reading flow, not a flat list "
             "of API pages. Organize pages into ordered SECTIONS, using this vocabulary and "
             f"order where they apply: {sections}.",
@@ -185,7 +207,8 @@ def plan_docs(
     existing_pages = _existing_page_paths(docs_root)
     existing_routes = adapter.nav_routes(docs_root)
     system, user = build_plan_prompt(
-        digests, existing_routes=existing_routes, existing_pages=existing_pages
+        digests, existing_routes=existing_routes, existing_pages=existing_pages,
+        thoroughness=config.thoroughness_for(),
     )
 
     raw_plan: DocPlan = llm.parse(
@@ -384,7 +407,9 @@ _KIND_INTRO = {
 }
 
 
-def build_author_prompt(planned: PlannedPage, excerpts: list[tuple[str, str]]) -> tuple[str, str]:
+def build_author_prompt(
+    planned: PlannedPage, excerpts: list[tuple[str, str]], thoroughness: str = "medium"
+) -> tuple[str, str]:
     """Return (system, user) for authoring one page, tailored to its kind.
 
     The system prompt layers the kind-specific role over the shared documentation-craft
@@ -397,6 +422,7 @@ def build_author_prompt(planned: PlannedPage, excerpts: list[tuple[str, str]]) -
     system = "\n".join(
         [
             intro,
+            style.thoroughness_directive(thoroughness),
             style.INVERTED_PYRAMID,
             style.SCANNABILITY,
             style.kind_structure(planned.kind),
@@ -435,12 +461,13 @@ def author_page(
 ) -> str:
     """Generate the full MDX text for one planned page (Opus, structured output)."""
     excerpts = _gather_excerpts(planned, repo_units)
-    system, user = build_author_prompt(planned, excerpts)
+    thoroughness = config.thoroughness_for(planned.kind)
+    system, user = build_author_prompt(planned, excerpts, thoroughness)
     authored: AuthoredPage = llm.parse(
         client,
         stage="author",
         model=config.models.edit_model,
-        max_tokens=_AUTHOR_MAX_TOKENS,
+        max_tokens=style.tokens_for(thoroughness, _AUTHOR_MAX_TOKENS),
         system=system,
         user=user,
         output_format=AuthoredPage,

@@ -77,3 +77,51 @@ KIND_STRUCTURE: dict[str, str] = {
 def kind_structure(kind: str) -> str:
     """The section skeleton for a page *kind*, defaulting to reference for unknowns."""
     return KIND_STRUCTURE.get(kind, KIND_STRUCTURE["reference"])
+
+
+# ---------------------------------------------------------------------------
+# Thoroughness — how much to write (the light/medium/high dial)
+# ---------------------------------------------------------------------------
+#
+# Orthogonal to a page's *kind* (which says how to shape it): the same reference page
+# can be covered lightly or exhaustively. Consumed by the author (bootstrap), edit, and
+# polish prompts; the matching token budgets come from `tokens_for`.
+_THOROUGHNESS: dict[str, str] = {
+    "light": (
+        "Thoroughness: LIGHT — cover only the most important surface. Keep the page "
+        "short: a concise summary and the essential fields/steps, not an exhaustive "
+        "enumeration. Omit secondary options and edge cases; document the common path. "
+        "When updating, make the smallest change that restores accuracy."
+    ),
+    "medium": (
+        "Thoroughness: MEDIUM — balanced depth. Cover the primary surface and the common "
+        "options; note the edge cases that genuinely matter, but don't aim for exhaustive "
+        "completeness. When updating, document the surface the change introduces without "
+        "expanding into adjacent material."
+    ),
+    "high": (
+        "Thoroughness: HIGH — be exhaustive within what the source supports. Document "
+        "every public symbol, parameter, option, return shape, and edge case, with a "
+        "worked example where it aids understanding. When updating, fully document the "
+        "surface the change introduces (add the rows/sections/fields it warrants), still "
+        "as surgical additions that match the page's existing structure."
+    ),
+}
+
+# Output-token budget multipliers per level (applied to each stage's base budget).
+_TOKEN_MULTIPLIER: dict[str, float] = {"light": 0.6, "medium": 1.0, "high": 1.6}
+
+
+def thoroughness_directive(level: str) -> str:
+    """The coverage/length directive for a thoroughness *level* (unknown ⇒ medium)."""
+    return _THOROUGHNESS.get(level, _THOROUGHNESS["medium"])
+
+
+def tokens_for(level: str, base: int) -> int:
+    """Scale a stage's base output-token budget by the thoroughness *level*.
+
+    light shrinks the budget, high grows it; medium is the unchanged base. Floored at a
+    small minimum so a light page can still hold a real edit.
+    """
+    scaled = int(base * _TOKEN_MULTIPLIER.get(level, 1.0))
+    return max(1024, scaled)

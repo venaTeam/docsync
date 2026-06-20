@@ -257,6 +257,17 @@ class DocsyncConfig(BaseModel):
     # YAML frontmatter, no nav manifest). Drives frontmatter freeze, structural
     # integrity, link checks, and the new-page extension.
     adapter: str = "mintlify"
+    # Generation thoroughness — how much content docsync writes. Drives prose depth
+    # (style.thoroughness_directive), per-stage token budgets (style.tokens_for), the
+    # bootstrap page-count target, and the run diff-size guardrail:
+    #   light  — only the most important surface; short pages, tighter edits.
+    #   medium — balanced depth (the default).
+    #   high   — exhaustive; document every symbol/option/edge case, looser edits.
+    thoroughness: Literal["light", "medium", "high"] = "medium"
+    # Per-page-kind overrides for `thoroughness`, keyed by PageKind ("reference" |
+    # "concept" | "guide"). Applies where a kind is known (bootstrap authoring); the run
+    # edit flow has no per-page kind and uses the global level. e.g. {reference: high}.
+    thoroughness_by_kind: dict[str, str] = Field(default_factory=dict)
     # Extra directory names to prune during ingest, on top of ingest.DEFAULT_EXCLUDE_DIRS.
     # Use this to skip repo-specific noise that isn't the product surface you document
     # (e.g. "examples", "deploy", "docs", a generated site dir) so it doesn't inflate
@@ -307,6 +318,16 @@ class DocsyncConfig(BaseModel):
     # None = no budget tracking (the dashboard still shows raw cost). Advisory only —
     # docsync never blocks a run on it.
     monthly_budget_usd: Optional[float] = None
+
+    def thoroughness_for(self, kind: str | None = None) -> str:
+        """Effective thoroughness level for a page *kind* (falls back to the global level).
+
+        Pass a PageKind to honor a `thoroughness_by_kind` override; pass nothing (the run
+        edit flow, which has no per-page kind) to get the global `thoroughness`.
+        """
+        if kind:
+            return self.thoroughness_by_kind.get(kind, self.thoroughness)
+        return self.thoroughness
 
 
 # ---------------------------------------------------------------------------

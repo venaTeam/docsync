@@ -23,6 +23,20 @@ from .impact import find_anchor_candidates, find_embedding_candidates
 app = typer.Typer(add_completion=False, help="Keep documentation in sync with code changes.")
 
 
+_THOROUGHNESS_LEVELS = ("light", "medium", "high")
+
+
+def _apply_thoroughness(config, value: Optional[str]) -> None:
+    """Override `config.thoroughness` from a CLI flag, validating the level."""
+    if value is None:
+        return
+    if value not in _THOROUGHNESS_LEVELS:
+        raise typer.BadParameter(
+            f"--thoroughness must be one of {', '.join(_THOROUGHNESS_LEVELS)}"
+        )
+    config.thoroughness = value
+
+
 def _build_diff(
     src_repo: str, base: str, head: str, pr_number: Optional[int], pr_title: Optional[str]
 ):
@@ -119,6 +133,11 @@ def run(
         help="Pre-flight the manifest (doctor) and abort before any LLM spend if it "
         "references doc pages that don't exist. --no-preflight to bypass.",
     ),
+    thoroughness: Optional[str] = typer.Option(
+        None,
+        help="Generation thoroughness: light | medium | high. Controls edit depth and "
+        "the diff-size budget. Overrides config.thoroughness.",
+    ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
     backend: str = typer.Option(
         "api",
@@ -135,6 +154,7 @@ def run(
         config.max_parallel_requests = max_parallel
     if polish is not None:
         config.readability_pass = polish
+    _apply_thoroughness(config, thoroughness)
 
     # Mono-repo convenience: when docs and code share one checkout, default the source
     # to the docs repo so `docsync run --docs-repo . --base X --head Y` needs no
@@ -321,6 +341,11 @@ def bootstrap(
         "revises it for a leading summary + scannable structure (adds an edit-model call "
         "per page). Overrides config.readability_pass.",
     ),
+    thoroughness: Optional[str] = typer.Option(
+        None,
+        help="Generation thoroughness: light | medium | high. Controls how many pages "
+        "the planner targets and how deep each page goes. Overrides config.thoroughness.",
+    ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
     backend: str = typer.Option("api", help="LLM backend: 'api' or 'claude-code'."),
 ):
@@ -340,6 +365,7 @@ def bootstrap(
         config.max_parallel_requests = max_parallel
     if polish is not None:
         config.readability_pass = polish
+    _apply_thoroughness(config, thoroughness)
 
     client = get_client(backend)
     result = bootstrap_mod.run_bootstrap(
