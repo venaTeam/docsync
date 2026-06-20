@@ -90,6 +90,50 @@ def test_aggregate_empty():
     assert s.total_runs == 0 and s.total_cost_usd == 0.0
 
 
+def _page(path: str, *, applied: bool, note: str) -> PageRecord:
+    return PageRecord(page_path=path, applied=applied, note=note)
+
+
+def test_aggregate_edit_drop_rate():
+    # One run with a mix: 1 applied, 3 real drops (validation/critique/not-applicable),
+    # 1 deliberate skip (excluded), 1 legit no-change (attempted but not a drop).
+    run = RunRecord(
+        timestamp="2026-06-10T10:00:00+00:00", command="run", status="opened",
+        repo="venaTeam/docsync", counts={"impacted": 6, "updated": 1, "dropped": 3},
+        pages=[
+            _page("a.mdx", applied=True, note="ready"),
+            _page("b.mdx", applied=False, note="dropped by validation: frontmatter changed"),
+            _page("c.mdx", applied=False, note="dropped by self-critique: not justified"),
+            _page("d.mdx", applied=False, note="edit not applicable (dropped): no unique match"),
+            _page("e.mdx", applied=False, note="skipped: max-pages-per-run cap (5) reached"),
+            _page("f.mdx", applied=False, note="model returned no edits"),
+        ],
+    )
+    s = dash.aggregate([run])
+    assert s.pages_attempted == 5  # 6 pages minus the one deliberate "skipped:"
+    assert s.pages_dropped == 3  # validation + critique + not_applicable
+    assert abs(s.drop_rate - 3 / 5) < 1e-9
+    assert s.drops_by_reason == {"validation": 1, "critique": 1, "not_applicable": 1}
+    # The breakdown line surfaces in the rendered overview.
+    html = dash._overview_html(s)
+    assert "edit-drop rate" in html
+    assert "3 of 5 attempted" in html
+
+
+def test_aggregate_drop_rate_ignores_bootstrap_pages():
+    # bootstrap authoring is not the edit path; its non-applied pages must not count.
+    run = RunRecord(
+        timestamp="2026-06-10T10:00:00+00:00", command="bootstrap", status="opened",
+        repo="venaTeam/docsync", counts={"planned": 2, "authored": 1, "skipped": 1},
+        pages=[
+            _page("a.mdx", applied=True, note="ready"),
+            _page("b.mdx", applied=False, note="dropped by validation: x"),
+        ],
+    )
+    s = dash.aggregate([run])
+    assert s.pages_attempted == 0 and s.pages_dropped == 0 and s.drop_rate == 0.0
+
+
 def test_model_stage_breakdown_sums_across_runs():
     runs = [_run_record("2026-06-10T10:00:00+00:00", cost=0.10),
             _run_record("2026-06-11T10:00:00+00:00", cost=0.20)]

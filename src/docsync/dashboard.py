@@ -39,8 +39,35 @@ class DashboardStats(BaseModel):
     total_calls: int = 0
     avg_cache_hit_rate: float = 0.0
     success_rate: float = 0.0
+    # Edit-drop health (run command only): a page is "attempted" once the editor was
+    # actually invoked on it — deliberate skips (max-pages cap / below confidence floor)
+    # don't count. A "drop" is an attempted page the editor produced but a gate rejected
+    # (validation / self-critique / non-applicable find / error). A correct no-change is
+    # neither a drop nor excluded — it dilutes the rate, as a processed page should.
+    pages_attempted: int = 0
+    pages_dropped: int = 0
+    drop_rate: float = 0.0
+    drops_by_reason: dict[str, int] = Field(default_factory=dict)
     first_ts: Optional[str] = None
     last_ts: Optional[str] = None
+
+
+def _drop_reason(note: str) -> Optional[str]:
+    """Classify a non-applied page's outcome note into a drop reason, or None.
+
+    Matches the note prefixes the pipeline writes (`pipeline.py`). Returns None for
+    notes that are *not* drops — a deliberate "skipped:" cap/floor or a legitimate
+    "no edits" no-op — so the caller can keep them out of the dropped count.
+    """
+    if note.startswith("dropped by validation"):
+        return "validation"
+    if note.startswith("dropped by self-critique"):
+        return "critique"
+    if note.startswith("edit not applicable"):
+        return "not_applicable"
+    if note.startswith(("edit generation failed", "page not found", "unexpected error")):
+        return "error"
+    return None
 
 
 def aggregate(runs: list[RunRecord]) -> DashboardStats:
@@ -57,6 +84,17 @@ def aggregate(runs: list[RunRecord]) -> DashboardStats:
         else:
             stats.run_runs += 1
             stats.pages_updated += r.counts.get("updated", 0)
+            for p in r.pages:
+                if p.note.startswith("skipped:"):
+                    continue  # cap/floor — the editor was never invoked on this page
+                stats.pages_attempted += 1
+                if p.applied:
+                    continue
+                reason = _drop_reason(p.note)
+                if reason is None:
+                    continue  # attempted but a legit no-change no-op, not a drop
+                stats.pages_dropped += 1
+                stats.drops_by_reason[reason] = stats.drops_by_reason.get(reason, 0) + 1
         if r.status != "error":
             successes += 1
         if r.usage:
@@ -66,6 +104,7 @@ def aggregate(runs: list[RunRecord]) -> DashboardStats:
                 cache_rates.append(r.usage.cache_hit_rate)
     stats.success_rate = successes / len(runs)
     stats.avg_cache_hit_rate = sum(cache_rates) / len(cache_rates) if cache_rates else 0.0
+    stats.drop_rate = stats.pages_dropped / stats.pages_attempted if stats.pages_attempted else 0.0
     ordered = sorted(runs, key=lambda r: r.timestamp)
     stats.first_ts = ordered[0].timestamp
     stats.last_ts = ordered[-1].timestamp
@@ -323,6 +362,11 @@ def _overview_html(s: DashboardStats) -> str:
     def card(n: str, label: str) -> str:
         return f"<div class=card><div class=n>{escape(n)}</div><div class=l>{escape(label)}</div></div>"
 
+    drop_card = (
+        card(f"{s.drop_rate * 100:.0f}%", "edit-drop rate")
+        if s.pages_attempted
+        else card("—", "edit-drop rate")
+    )
     cards = [
         card(str(s.total_runs), "runs"),
         card(str(s.pages_updated), "pages updated"),
@@ -330,8 +374,18 @@ def _overview_html(s: DashboardStats) -> str:
         card(f"${s.total_cost_usd:.2f}", "est. total cost"),
         card(f"{s.avg_cache_hit_rate * 100:.0f}%", "avg cache hit"),
         card(f"{s.success_rate * 100:.0f}%", "success rate"),
+        drop_card,
     ]
-    return "<div class=cards>" + "".join(cards) + "</div>"
+    html = "<div class=cards>" + "".join(cards) + "</div>"
+    if s.pages_dropped:
+        reasons = ", ".join(
+            f"{escape(reason)} {n}" for reason, n in sorted(s.drops_by_reason.items())
+        )
+        html += (
+            f"<p class=sub style='margin:8px 0 0'>{s.pages_dropped} of {s.pages_attempted} "
+            f"attempted page(s) dropped — {escape(reasons)}</p>"
+        )
+    return html
 
 
 def _budget_html(b: BudgetStatus) -> str:

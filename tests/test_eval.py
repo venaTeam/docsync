@@ -19,6 +19,7 @@ from docsync.eval import (
     load_golden,
     run_eval,
     score_case,
+    threshold_breaches,
 )
 from docsync.models import (
     ChangedFile,
@@ -286,3 +287,32 @@ def test_run_eval_rejects_unknown_mode():
             mode="bogus",
             diff_fn=_diff_touching_alerts,
         )
+
+
+# ---------------------------------------------------------------------------
+# threshold_breaches — the CI regression gate
+# ---------------------------------------------------------------------------
+
+
+def _report(precision: float, recall: float) -> EvalReport:
+    return EvalReport(precision=precision, recall=recall, f1=0.0, n_cases=1)
+
+
+def test_threshold_no_floors_never_breaches():
+    assert threshold_breaches(_report(0.0, 0.0)) == []
+
+
+def test_threshold_recall_below_floor_breaches():
+    breaches = threshold_breaches(_report(1.0, 0.40), min_recall=0.80)
+    assert len(breaches) == 1
+    assert "recall" in breaches[0]
+
+
+def test_threshold_recall_at_floor_passes():
+    # >= floor clears the gate (exactly at the floor is acceptable).
+    assert threshold_breaches(_report(0.0, 0.80), min_recall=0.80) == []
+
+
+def test_threshold_precision_and_recall_both_breach():
+    breaches = threshold_breaches(_report(0.30, 0.20), min_recall=0.50, min_precision=0.50)
+    assert len(breaches) == 2

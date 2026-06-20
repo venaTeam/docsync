@@ -103,6 +103,28 @@ def score_case(expected: set[str], actual: set[str]) -> tuple[int, int, int]:
     return tp, fp, fn
 
 
+def threshold_breaches(
+    report: "EvalReport",
+    *,
+    min_recall: Optional[float] = None,
+    min_precision: Optional[float] = None,
+) -> list[str]:
+    """Return one human-readable message per floor the report falls below.
+
+    Empty list ⇒ the report clears every floor that was set (and an unset floor never
+    breaches). Pure — used by the ``eval`` CLI to decide its exit code, so the gate
+    logic is unit-testable without the network. Recall is the meaningful floor for
+    ``mode="map"``; map-mode precision is intentionally low on true-negative-at-edit
+    cases (see this module's docstring).
+    """
+    breaches: list[str] = []
+    if min_recall is not None and report.recall < min_recall:
+        breaches.append(f"recall {report.recall:.2f} < min {min_recall:.2f}")
+    if min_precision is not None and report.precision < min_precision:
+        breaches.append(f"precision {report.precision:.2f} < min {min_precision:.2f}")
+    return breaches
+
+
 def aggregate(results: list[CaseResult]) -> tuple[float, float, float]:
     """Micro-averaged ``(precision, recall, f1)`` over summed tp/fp/fn.
 
