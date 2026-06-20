@@ -10,20 +10,29 @@ comparison parameters with the pure :func:`parse_event`, and delegates the
 actual diffing to :func:`docsync.diff.diff_github` — so this module is
 network-free and fully testable by monkeypatching ``diff_github``.
 
-Two event shapes are understood:
+Two GitHub event shapes are understood:
 
 * ``repository_dispatch`` — a hand-rolled trigger carrying an explicit
   ``client_payload`` (``repo``/``base_sha``/``head_sha``/``pr_number``/``pr_title``).
 * ``push`` — the native push event (``repository.full_name``, ``before``,
   ``after``, ``head_commit.message``).
+
+GitLab CI is also supported, but it does *not* write an event JSON file — it
+exposes predefined environment variables instead. :func:`parse_gitlab_env`
+recovers the same :class:`EventInfo` from those vars (``CI_PROJECT_PATH``,
+``CI_COMMIT_BEFORE_SHA``, ``CI_COMMIT_SHA`` and the ``CI_MERGE_REQUEST_*``
+family); :func:`diff_from_gitlab_env` mirrors :func:`diff_from_event`; and
+:func:`diff_from_ci` auto-detects the platform (``GITLAB_CI`` env var vs the
+GitHub event file).
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from .diff import diff_github
 from .models import CodeDiff
@@ -33,8 +42,11 @@ __all__ = [
     "NULL_SHA",
     "is_null_sha",
     "parse_event",
+    "parse_gitlab_env",
     "load_event",
     "diff_from_event",
+    "diff_from_gitlab_env",
+    "diff_from_ci",
 ]
 
 # GitHub uses an all-zeros SHA as the "base" of a branch's very first push (there
@@ -53,7 +65,7 @@ def is_null_sha(sha: str | None) -> bool:
 
 @dataclass
 class EventInfo:
-    """The diff parameters recovered from a GitHub event, before null-base fixup."""
+    """The diff parameters recovered from a CI event, before null-base fixup."""
 
     repo: str
     base_sha: str
@@ -112,6 +124,58 @@ def parse_event(event: dict) -> EventInfo:
     )
 
 
+def parse_gitlab_env(env: Mapping[str, str]) -> EventInfo:
+    """Extract diff parameters from GitLab CI environment variables (pure; no I/O).
+
+    GitLab CI does not write an event JSON file the way GitHub does; it exposes
+    `predefined variables <https://docs.gitlab.com/ci/variables/predefined_variables/>`_
+    instead. The mapping is:
+
+    * ``CI_PROJECT_PATH`` → ``repo`` (``"group/name"``, matching GitHub's
+      ``owner/name`` shape).
+    * ``CI_COMMIT_BEFORE_SHA`` → ``base_sha`` (all-zeros on a branch's first
+      push, handled downstream by the null-base fallback).
+    * ``CI_COMMIT_SHA`` → ``head_sha``.
+
+    For **merge-request pipelines** (``CI_PIPELINE_SOURCE=merge_request_event``)
+    the ``CI_MERGE_REQUEST_*`` family is richer and preferred when present:
+
+    * ``CI_MERGE_REQUEST_IID`` → ``pr_number``.
+    * ``CI_MERGE_REQUEST_TITLE`` → ``pr_title``.
+    * ``CI_MERGE_REQUEST_DIFF_BASE_SHA`` → ``base_sha`` (the merge-base; better
+      than ``CI_COMMIT_BEFORE_SHA`` for MR diffs).
+    * ``CI_MERGE_REQUEST_SOURCE_BRANCH_SHA`` → ``head_sha`` (the real source-tip
+      commit; ``CI_COMMIT_SHA`` is the ephemeral merge-result commit).
+
+    Raises:
+        ValueError: if neither ``CI_PROJECT_PATH`` nor the commit SHAs are set,
+            i.e. this does not look like a GitLab CI environment.
+    """
+    repo = env.get("CI_PROJECT_PATH")
+    head = env.get("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA") or env.get("CI_COMMIT_SHA")
+    if not repo or not head:
+        raise ValueError(
+            "unrecognized GitLab CI environment: expected `CI_PROJECT_PATH` and "
+            "`CI_COMMIT_SHA` (or `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA`) to be set"
+        )
+
+    pr_number = _coerce_pr_number(env.get("CI_MERGE_REQUEST_IID"))
+    pr_title = env.get("CI_MERGE_REQUEST_TITLE")
+    base = (
+        env.get("CI_MERGE_REQUEST_DIFF_BASE_SHA")
+        or env.get("CI_COMMIT_BEFORE_SHA")
+        or NULL_SHA
+    )
+
+    return EventInfo(
+        repo=repo,
+        base_sha=base,
+        head_sha=head,
+        pr_number=pr_number,
+        pr_title=pr_title,
+    )
+
+
 def load_event(event_path: str | Path) -> dict:
     """Read and JSON-parse the event file at ``event_path`` (``$GITHUB_EVENT_PATH``)."""
     return json.loads(Path(event_path).read_text())
@@ -139,8 +203,80 @@ def diff_from_event(
             :func:`diff_github` is resolved at call time, so tests can either pass
             a network-free stub here or monkeypatch ``docsync.events.diff_github``.
     """
-    info = parse_event(load_event(event_path))
+    return _diff_from_info(parse_event(load_event(event_path)), runner=runner)
 
+
+def diff_from_gitlab_env(
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    runner: Optional[Callable[..., CodeDiff]] = None,
+) -> CodeDiff:
+    """Build a :class:`~docsync.models.CodeDiff` from GitLab CI environment vars.
+
+    The GitLab analogue of :func:`diff_from_event`: there is no event file, so
+    the parameters come from the predefined ``CI_*`` variables via
+    :func:`parse_gitlab_env`. The same null-base fallback applies — GitLab sets
+    ``CI_COMMIT_BEFORE_SHA`` to all-zeros on a branch's first push.
+
+    Args:
+        env: the environment mapping to read; defaults to ``os.environ`` when
+            ``None``. Tests inject a plain dict so they stay offline.
+        runner: the diffing callable; when ``None`` (the default) the module-level
+            :func:`diff_github` is used.
+    """
+    if env is None:
+        env = os.environ
+    return _diff_from_info(parse_gitlab_env(env), runner=runner)
+
+
+def diff_from_ci(
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    runner: Optional[Callable[..., CodeDiff]] = None,
+) -> CodeDiff:
+    """Auto-detect the CI platform and build a :class:`~docsync.models.CodeDiff`.
+
+    Detection order:
+
+    1. ``GITLAB_CI`` set → :func:`diff_from_gitlab_env` (GitLab exposes env vars,
+       not an event file).
+    2. ``GITHUB_EVENT_PATH`` set → :func:`diff_from_event` (the GitHub event JSON).
+
+    GitHub behavior is unchanged: when ``GITLAB_CI`` is absent this falls through
+    to the existing GitHub event-file path exactly as before.
+
+    Args:
+        env: the environment mapping to read; defaults to ``os.environ``.
+        runner: the diffing callable threaded through to the platform helper.
+
+    Raises:
+        ValueError: if neither platform is detected.
+    """
+    if env is None:
+        env = os.environ
+    if env.get("GITLAB_CI"):
+        return diff_from_gitlab_env(env, runner=runner)
+    event_path = env.get("GITHUB_EVENT_PATH")
+    if event_path:
+        return diff_from_event(event_path, runner=runner)
+    raise ValueError(
+        "no CI event detected: expected `GITLAB_CI` (GitLab) or "
+        "`GITHUB_EVENT_PATH` (GitHub) to be set"
+    )
+
+
+def _diff_from_info(
+    info: EventInfo,
+    *,
+    runner: Optional[Callable[..., CodeDiff]] = None,
+) -> CodeDiff:
+    """Apply the null-base fallback to ``info`` and delegate to the diff runner.
+
+    Null-base fallback: when the recovered base is git's all-zeros null SHA (a
+    branch's first push has no prior commit), compare against ``<head>^`` — the
+    head commit's first parent — so the diff is still meaningful instead of
+    against the empty tree.
+    """
     base = info.base_sha
     if is_null_sha(base):
         base = f"{info.head_sha}^"
