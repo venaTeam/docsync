@@ -78,10 +78,12 @@ def run(
         "anchor. Degrades to anchors-only if the embeddings extra isn't installed.",
     ),
     check_links: bool = typer.Option(False, help="Run the mintlify broken-link soft gate."),
-    self_critique: bool = typer.Option(
-        False,
+    self_critique: Optional[bool] = typer.Option(
+        None,
+        "--self-critique/--no-self-critique",
         help="Adversarially re-check each generated edit against the diff (adds a "
-        "judge-model call per page) and drop edits not justified by the change.",
+        "judge-model call per page) and drop edits not justified by the change. On by "
+        "default; --no-self-critique disables it. Overrides config.self_critique.",
     ),
     polish: Optional[bool] = typer.Option(
         None,
