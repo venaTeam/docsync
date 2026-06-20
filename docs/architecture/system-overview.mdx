@@ -42,7 +42,7 @@ flowchart TD
     subgraph UPDATE["Update pipeline (pipeline.run)"]
         IMPACT["impact mapping\nanchors + embeddings → candidate pages"]
         EDIT["authoring\ngenerate_page_edit → PageEdit"]
-        CRIT["self-critique (optional)\ncritique_page_edit → drop unfaithful ops"]
+        CRIT["self-critique (default on)\ncritique_page_edit → drop unfaithful ops"]
         VAL["validation\nvalidate_page"]
     end
 
@@ -163,9 +163,9 @@ It collects the routes and `.mdx`/`.md` paths that already exist on disk (`_exis
 Concept and guide pages anchor to broad subsystem globs and carry `judge_required`. That flag is what lets `docsync run` keep narrative pages live without firing an edit on every unrelated change — a judge call decides whether the change actually matters to that page.
 </Note>
 
-### 6 · Self-critique (optional update gate)
+### 6 · Self-critique (update gate, on by default)
 
-With `--self-critique`, each proposed `PageEdit` passes through an adversarial second opinion before validation. `critique.critique_page_edit` runs a cheap Haiku call that judges every edit op against the actual diff and asks one question only: *does this edit faithfully reflect THIS diff, and touch only what the diff changed?*
+Self-critique runs by default (disable with `--no-self-critique`, or via `config.self_critique`): each proposed `PageEdit` passes through an adversarial second opinion before validation. `critique.critique_page_edit` runs a cheap Haiku call that judges every edit op against the actual diff and asks one question only: *does this edit faithfully reflect THIS diff, and touch only what the diff changed?*
 
 The verdict is intentionally flat so the structured-output backend has nothing nested to validate:
 
@@ -182,10 +182,10 @@ class CritiqueVerdict(BaseModel):
 
 Validation is the last gate before anything is written.
 
-- **Update flow:** `validate_page` checks each surviving edit. Validation runs through a docs-format **adapter** (`validate.get_adapter`) that knows how to parse the target format and resolve nav routes.
+- **Update flow:** `validate_page` checks each surviving edit. Validation runs through a docs-format **adapter** (`validate.get_adapter`) that knows how to parse the target format and resolve nav routes. The active adapter is selected by `config.adapter` — `mintlify` (`.mdx` + MDX components, `docs.json` nav) or `markdown` (plain `.md`, YAML frontmatter, no nav manifest) — and every stage resolves it through the `adapters` registry's `make_adapter`.
 - **Bootstrap flow:** `validate_new_page` applies *absolute* gates — there is no original page to diff against, so the page must stand on its own.
 
-An optional broken-link soft gate runs when `--check-links` is set.
+An optional broken-link soft gate runs when `--check-links` is set — it runs the active adapter's link checker, which is a no-op for adapters without one (e.g. plain markdown).
 
 <Warning>
 The validation adapter is format-aware, and bootstrap's gates are stricter than the update flow's: editing a page can lean on the original as a baseline, but a freshly authored page has nothing to fall back on, so it must pass on its own merits.
@@ -257,7 +257,7 @@ The GitHub event JSON yields repo / base / head / PR; preflight and the idempote
 Manifest anchors (plus the embeddings recall-net) produce a confidence-ranked list of candidate pages, filtered and capped by the CLI knobs.
 </Step>
 <Step title="Author edits">
-`generate_page_edit` proposes surgical `PageEdit`s; with `--self-critique` an adversarial Haiku pass drops unfaithful ops.
+`generate_page_edit` proposes surgical `PageEdit`s; an adversarial Haiku pass (on by default; `--no-self-critique` disables) drops unfaithful ops.
 </Step>
 <Step title="Validate">
 `validate_page` (via a format adapter) gates each edit; broken-link checks run if requested.
