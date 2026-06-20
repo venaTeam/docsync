@@ -205,6 +205,16 @@ pages:
           - load_config
           - _config_template
           - DOCSYNC_DIR
+      # The config schema itself (every field + default) lives in models.py, not config.py.
+      - repo: docsync
+        globs:
+          - src/docsync/models.py
+        symbols:
+          - DocsyncConfig
+          - ModelConfig
+    # models.py is a grab-bag; route this page through the cheap judge so an unrelated
+    # models.py field change is rejected there instead of autopassing into the Opus editor.
+    judge_required: true
   - path: reference/models-data-structures.mdx
     sources:
       - repo: docsync
