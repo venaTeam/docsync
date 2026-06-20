@@ -258,6 +258,10 @@ class DocsyncConfig(BaseModel):
     # Hard cap on pages sent to the (expensive) edit stage per run; 0 = unlimited.
     # Highest-confidence pages are edited first; the rest are reported, not edited.
     max_pages_per_run: int = 0
+    # Opt-in readability pass: after a page is authored/edited, run one more (fact-frozen)
+    # LLM pass that revises it for a leading summary + scannable structure. Off by default
+    # — adds an edit-model call per produced page; the CLI `--polish` flag toggles it.
+    readability_pass: bool = False
     # Identifier tokens that name source concepts but are too generic to embed well;
     # excluded from the embedding query (e.g. "self", "config", "value").
     stopword_symbols: list[str] = Field(default_factory=list)

@@ -83,6 +83,13 @@ def run(
         help="Adversarially re-check each generated edit against the diff (adds a "
         "judge-model call per page) and drop edits not justified by the change.",
     ),
+    polish: Optional[bool] = typer.Option(
+        None,
+        "--polish/--no-polish",
+        help="Readability pass: after each edit, run a fact-frozen pass that revises the "
+        "page for a leading summary + scannable structure (adds an edit-model call and a "
+        "larger diff). Overrides config.readability_pass.",
+    ),
     min_confidence: Optional[float] = typer.Option(
         None,
         help="Skip the edit stage for pages below this impact confidence (0-1). "
@@ -117,6 +124,8 @@ def run(
     manifest = cfg.load_manifest(docs_repo)
     if max_parallel is not None:
         config.max_parallel_requests = max_parallel
+    if polish is not None:
+        config.readability_pass = polish
 
     # Cursor-aware base: a manual run with a repo + head but no base diffs from the
     # last sync point (the stored cursor) instead of erroring on a missing --base.
@@ -267,6 +276,13 @@ def bootstrap(
     ),
     force: bool = typer.Option(False, help="Overwrite existing page files (default: skip)."),
     check_links: bool = typer.Option(False, help="Run the mintlify broken-link soft gate."),
+    polish: Optional[bool] = typer.Option(
+        None,
+        "--polish/--no-polish",
+        help="Readability pass: after authoring each page, run a fact-frozen pass that "
+        "revises it for a leading summary + scannable structure (adds an edit-model call "
+        "per page). Overrides config.readability_pass.",
+    ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
     backend: str = typer.Option("api", help="LLM backend: 'api' or 'claude-code'."),
 ):
@@ -284,6 +300,8 @@ def bootstrap(
     config = cfg.load_config(docs_repo)
     if max_parallel is not None:
         config.max_parallel_requests = max_parallel
+    if polish is not None:
+        config.readability_pass = polish
 
     client = get_client(backend)
     result = bootstrap_mod.run_bootstrap(
