@@ -14,6 +14,7 @@ import io
 import json
 from pathlib import Path
 
+from pydantic import ValidationError
 from ruamel.yaml import YAML
 
 from .models import DocsyncConfig, Manifest, ManifestPage
@@ -38,12 +39,36 @@ def docsync_dir(docs_repo: Path) -> Path:
 
 
 def load_config(docs_repo: Path) -> DocsyncConfig:
-    """Load .docsync/config.yml; return defaults if it's absent."""
+    """Load .docsync/config.yml; return defaults if it's absent.
+
+    Raises :class:`ConfigError` (with the offending field) on an unknown key or a
+    bad value, rather than leaking a raw Pydantic traceback — a typo'd field is a
+    mistake worth surfacing, not silently ignoring.
+    """
     path = docsync_dir(docs_repo) / CONFIG_FILE
     if not path.exists():
         return DocsyncConfig()
     data = _yaml.load(path.read_text()) or {}
-    return DocsyncConfig.model_validate(data)
+    try:
+        return DocsyncConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(_format_config_error(path, exc)) from exc
+
+
+class ConfigError(ValueError):
+    """A `.docsync/config.yml` that doesn't validate (unknown key or bad value)."""
+
+
+def _format_config_error(path: Path, exc: ValidationError) -> str:
+    """A friendly, `.docsync/config.yml`-framed message for a config validation error."""
+    lines = [f"invalid config in {path}:"]
+    for err in exc.errors():
+        field = ".".join(str(p) for p in err["loc"]) or "(root)"
+        msg = err["msg"]
+        if err["type"] == "extra_forbidden":
+            msg = "unknown field (check the spelling; run `docsync explain` for valid fields)"
+        lines.append(f"  - {field}: {msg}")
+    return "\n".join(lines)
 
 
 def load_manifest(docs_repo: Path) -> Manifest:

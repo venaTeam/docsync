@@ -37,6 +37,24 @@ def _apply_thoroughness(config, value: Optional[str]) -> None:
     config.thoroughness = value
 
 
+def _load_config(docs_repo: Path):
+    """Load config, exiting with a friendly framed message on an invalid config.yml."""
+    try:
+        return cfg.load_config(docs_repo)
+    except cfg.ConfigError as exc:
+        typer.echo(f"docsync: {exc}")
+        raise typer.Exit(2) from exc
+
+
+def _load_manifest_or_hint(docs_repo: Path):
+    """Load the manifest, exiting with a 'run `docsync init`' hint when it's missing."""
+    try:
+        return cfg.load_manifest(docs_repo)
+    except FileNotFoundError as exc:
+        typer.echo(f"docsync: {exc}\nRun `docsync init` first.")
+        raise typer.Exit(2) from exc
+
+
 def _build_diff(
     src_repo: str, base: str, head: str, pr_number: Optional[int], pr_title: Optional[str]
 ):
@@ -148,8 +166,8 @@ def run(
     """Full pipeline: diff -> impact -> edits -> validate -> (PR | patch + report)."""
     from .llm_backends import get_client
 
-    config = cfg.load_config(docs_repo)
-    manifest = cfg.load_manifest(docs_repo)
+    config = _load_config(docs_repo)
+    manifest = _load_manifest_or_hint(docs_repo)
     if max_parallel is not None:
         config.max_parallel_requests = max_parallel
     if polish is not None:
@@ -360,7 +378,7 @@ def bootstrap(
 
     repos = [_parse_repo_spec(item) for item in src_repo]
 
-    config = cfg.load_config(docs_repo)
+    config = _load_config(docs_repo)
     if max_parallel is not None:
         config.max_parallel_requests = max_parallel
     if polish is not None:
@@ -455,7 +473,7 @@ def infer(
     from .llm_backends import get_client
 
     repos = [_parse_repo_spec(item) for item in src_repo]
-    config = cfg.load_config(docs_repo)
+    config = _load_config(docs_repo)
     if max_parallel is not None:
         config.max_parallel_requests = max_parallel
 
@@ -513,9 +531,9 @@ def dashboard(
     from . import dashboard as dash_mod
     from . import history
 
-    config = cfg.load_config(docs_repo)
+    config = _load_config(docs_repo)
     try:
-        manifest = cfg.load_manifest(docs_repo)
+        manifest = _load_manifest_or_hint(docs_repo)
     except FileNotFoundError:
         manifest = None
 
@@ -555,8 +573,8 @@ def map(  # noqa: A001 - intentional command name
 
     Cheap inspection — no LLM judge or edits. Prints candidate pages and why.
     """
-    config = cfg.load_config(docs_repo)
-    manifest = cfg.load_manifest(docs_repo)
+    config = _load_config(docs_repo)
+    manifest = _load_manifest_or_hint(docs_repo)
     base = base or _base_or_cursor(docs_repo, src_repo)
     diff = _build_diff(src_repo, base, head, None, None)
     docs_root = docs_repo / config.docs_root
@@ -594,7 +612,7 @@ def index(
     """
     from . import embeddings as embeddings_mod
 
-    config = cfg.load_config(docs_repo)
+    config = _load_config(docs_repo)
     docs_root = docs_repo / config.docs_root
     cache_dir = docs_repo / cfg.DOCSYNC_DIR / "state" / "embeddings"
     try:
@@ -664,13 +682,17 @@ def init(
         )
 
     if not infer:
-        hint = (
-            "Run `docsync infer --src-repo name=path` to populate the manifest, "
-            "or hand-author .docsync/manifest.yml."
+        populate = (
+            "docsync infer --src-repo name=path   # auto-propose manifest anchors"
             if use_minimal
-            else "Edit .docsync/manifest.yml to map pages to source code, then run `docsync doctor`."
+            else "edit .docsync/manifest.yml          # map pages to their source code"
         )
-        typer.echo(f"docsync: scaffolded {len(created)} file(s). {hint}")
+        typer.echo(f"\ndocsync: scaffolded {len(created)} file(s). Next steps:")
+        typer.echo(f"  1. {populate}")
+        typer.echo("  2. docsync doctor                    # check the manifest resolves")
+        typer.echo("  3. docsync run --docs-repo . --src-repo … --base … --head …   # dry-run preview")
+        typer.echo("  4. add --open-pr to step 3 to open the docs PR")
+        typer.echo("\nRun `docsync explain` to see every config option.")
         return
 
     # --infer: chain straight into inference against the given source checkout(s).
@@ -680,7 +702,7 @@ def init(
     from .llm_backends import get_client
 
     repos = [_parse_repo_spec(item) for item in src_repo]
-    config = cfg.load_config(docs_repo)
+    config = _load_config(docs_repo)
     client = get_client(backend)
     try:
         result = infer_mod.run_infer(repos, docs_repo, config, client=client)
@@ -767,8 +789,8 @@ def eval(  # noqa: A001 - intentional command name
     """
     from .eval import load_golden, run_eval, threshold_breaches
 
-    config = cfg.load_config(docs_repo)
-    manifest = cfg.load_manifest(docs_repo)
+    config = _load_config(docs_repo)
+    manifest = _load_manifest_or_hint(docs_repo)
     cases = load_golden(golden)
 
     client = None
@@ -802,6 +824,82 @@ def eval(  # noqa: A001 - intentional command name
     if breaches:
         typer.echo("docsync eval: BELOW THRESHOLD — " + "; ".join(breaches))
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# explain — the canonical config/manifest reference (replaces "read models.py")
+# ---------------------------------------------------------------------------
+
+
+def _type_name(annotation) -> str:
+    """A readable type name for a pydantic field annotation."""
+    import re
+
+    s = str(annotation).replace("typing.", "")
+    m = re.fullmatch(r"<class '([\w.]+)'>", s)
+    if m:
+        return m.group(1).rsplit(".", 1)[-1]
+    # Strip dotted module qualifiers inside generics, e.g. list[a.b.C] -> list[C].
+    return re.sub(r"[a-zA-Z_][\w]*\.", "", s)
+
+
+def _field_default(field) -> str:
+    """A display string for a field's default (or '(required)')."""
+    if field.is_required():
+        return "(required)"
+    if field.default_factory is not None:
+        return repr(field.default_factory())
+    return repr(field.default)
+
+
+def _render_fields(model) -> list[str]:
+    """One formatted block per field of a pydantic *model*."""
+    lines: list[str] = []
+    for name, field in model.model_fields.items():
+        lines.append(
+            f"  {name}  ({_type_name(field.annotation)}, default: {_field_default(field)})"
+        )
+        if field.description:
+            lines.append(f"      {field.description}")
+    return lines
+
+
+@app.command()
+def explain(
+    field: Optional[str] = typer.Argument(
+        None,
+        help="A config field to explain, or 'manifest' for the manifest schema. "
+        "Omit to list every config field.",
+    ),
+):
+    """Explain docsync configuration: every `.docsync/config.yml` field and its default.
+
+    `docsync explain` lists all config fields; `docsync explain <field>` shows one;
+    `docsync explain manifest` shows the manifest page/source schema.
+    """
+    from .models import DocsyncConfig, ManifestPage, ManifestSource
+
+    if field == "manifest":
+        typer.echo("docsync manifest schema (.docsync/manifest.yml) — pages: [ManifestPage]\n")
+        typer.echo("ManifestPage:")
+        typer.echo("\n".join(_render_fields(ManifestPage)))
+        typer.echo("\nManifestSource (each entry under a page's `sources`):")
+        typer.echo("\n".join(_render_fields(ManifestSource)))
+        return
+
+    if field:
+        if field not in DocsyncConfig.model_fields:
+            valid = ", ".join(DocsyncConfig.model_fields)
+            raise typer.BadParameter(f"unknown config field {field!r}. Valid fields: {valid}")
+        info = DocsyncConfig.model_fields[field]
+        typer.echo(f"{field}  ({_type_name(info.annotation)}, default: {_field_default(info)})")
+        if info.description:
+            typer.echo(f"  {info.description}")
+        return
+
+    typer.echo("docsync config (.docsync/config.yml) — all fields optional:\n")
+    typer.echo("\n".join(_render_fields(DocsyncConfig)))
+    typer.echo("\nRun `docsync explain manifest` for the manifest schema.")
 
 
 if __name__ == "__main__":
