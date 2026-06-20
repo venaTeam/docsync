@@ -175,12 +175,16 @@ def run(
         report_path.write_text(body, encoding="utf-8")
         typer.echo(f"docsync: report written to {report_path}")
 
+    from . import history
+
     changed = result.changed()
     if not changed:
+        history.record_run(docs_repo, result, command="run", status="no_change")
         typer.echo("docsync: no validated changes; nothing to open.")
         raise typer.Exit(0)
 
     if dry_run and not open_pr:
+        history.record_run(docs_repo, result, command="run", status="dry_run")
         typer.echo("docsync: dry run — not writing changes. Use --no-dry-run / --open-pr to apply.")
         raise typer.Exit(0)
 
@@ -199,8 +203,10 @@ def run(
             reviewers=config.reviewers,
             labels=config.pr_labels,
         )
+        history.record_run(docs_repo, result, command="run", status="opened", pr_url=url)
         typer.echo(f"docsync: PR -> {url}")
     else:
+        history.record_run(docs_repo, result, command="run", status="patched")
         patch = pr_mod.write_patch(docs_repo, docs_repo / "docsync.patch")
         if patch:
             typer.echo(f"docsync: patch written to {patch}")
@@ -319,12 +325,16 @@ def bootstrap(
         typer.echo("docsync: plan-only — no pages authored.")
         raise typer.Exit(0)
 
+    from . import history
+
     authored = result.authored()
     if not authored:
+        history.record_run(docs_repo, result, command="bootstrap", status="no_change")
         typer.echo("docsync: no validated pages; nothing to write.")
         raise typer.Exit(0)
 
     if dry_run and not open_pr:
+        history.record_run(docs_repo, result, command="bootstrap", status="dry_run")
         typer.echo("docsync: dry run — not writing. Use --no-dry-run / --open-pr to apply.")
         raise typer.Exit(0)
 
@@ -342,8 +352,10 @@ def bootstrap(
             reviewers=config.reviewers,
             labels=config.pr_labels,
         )
+        history.record_run(docs_repo, result, command="bootstrap", status="opened", pr_url=url)
         typer.echo(f"docsync: PR -> {url}")
     else:
+        history.record_run(docs_repo, result, command="bootstrap", status="patched")
         patch = pr_mod.write_patch(docs_repo, docs_repo / "docsync-bootstrap.patch")
         if patch:
             typer.echo(f"docsync: patch written to {patch}")
@@ -415,6 +427,60 @@ def infer(
 
     added = infer_mod.write_infer(result, docs_repo, config)
     typer.echo(f"docsync: wrote {len(added)} anchor(s) to .docsync/manifest.yml.")
+
+
+@app.command()
+def dashboard(
+    docs_repo: Path = typer.Option(..., help="Docs repo with .docsync/ run history."),
+    out: Path = typer.Option(
+        Path("docsync-dashboard.html"), help="Write the self-contained HTML dashboard here."
+    ),
+    serve: bool = typer.Option(
+        False, help="Serve the dashboard locally over http.server instead of writing a file."
+    ),
+    port: int = typer.Option(8765, help="Port for --serve."),
+    open_browser: bool = typer.Option(
+        False, "--open/--no-open", help="Open the dashboard in a browser (with --serve)."
+    ),
+    limit: Optional[int] = typer.Option(None, help="Show only the most recent N runs."),
+    checkout: Optional[List[str]] = typer.Option(
+        None, help="Source checkout 'owner/name=path' (repeatable) for the health panel's doctor."
+    ),
+):
+    """Render a dashboard of docsync activity: stats, runs, cost/budget, changes, health.
+
+    Reads `.docsync/state/runs.jsonl` (populated on each `run`/`bootstrap`). Writes a single
+    self-contained HTML file by default; `--serve` hosts it locally (never use in CI).
+    """
+    from . import dashboard as dash_mod
+    from . import history
+
+    config = cfg.load_config(docs_repo)
+    try:
+        manifest = cfg.load_manifest(docs_repo)
+    except FileNotFoundError:
+        manifest = None
+
+    checkouts: dict[str, Path] = {}
+    for item in checkout or []:
+        if "=" not in item:
+            raise typer.BadParameter(f"--checkout must be 'owner/name=path', got {item!r}")
+        repo, _, path = item.partition("=")
+        checkouts[repo] = Path(path)
+
+    runs = history.load_runs(docs_repo, limit=limit)
+    health = dash_mod.build_health(docs_repo, config, manifest, checkouts)
+    html = dash_mod.render_dashboard(runs, config, manifest, health)
+
+    if serve:
+        if not runs:
+            typer.echo("docsync: no runs recorded yet — serving an empty dashboard.")
+        dash_mod.serve(html, port=port, open_browser=open_browser)
+    else:
+        out.write_text(html, encoding="utf-8")
+        typer.echo(f"docsync: dashboard written to {out} ({len(runs)} run(s)).")
+        if not runs:
+            typer.echo("docsync: no runs recorded yet — run `docsync run`/`bootstrap` first.")
 
 
 @app.command()
