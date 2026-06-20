@@ -96,7 +96,7 @@ The `changed_paths()` and `all_symbols()` helpers come from the shared `CodeDiff
 
 The system prompt states the invariants (adversarial reviewer, judge faithfulness only, keep-vs-reject rules) and is sent with `cache_control: ephemeral` so the invariant prefix is cached across pages — only the per-page user message changes.
 
-`critique_page_edit` ties it together, mirroring the `messages.parse(...)` structured-output idiom used elsewhere in docsync:
+`critique_page_edit` ties it together via the shared `llm.parse` wrapper that every docsync stage uses for its structured-output call:
 
 ```python
 def critique_page_edit(client, *, diff, page_path, page_edit,
@@ -106,23 +106,22 @@ def critique_page_edit(client, *, diff, page_path, page_edit,
         system_text = f"{system_text}\n{system_extra}"
     user_prompt = build_critique_prompt(diff, page_path, page_edit)
 
-    with cost.stage("critique"):
-        resp = client.messages.parse(
-            model=model or _JUDGE_MODEL,   # "claude-haiku-4-5"
-            max_tokens=_MAX_TOKENS,        # 2000 — the verdict is tiny
-            system=[{"type": "text", "text": system_text,
-                     "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user_prompt}],
-            output_format=CritiqueVerdict,
-        )
-    return resp.parsed_output
+    return llm.parse(
+        client,
+        stage="critique",
+        model=model or _JUDGE_MODEL,   # "claude-haiku-4-5"
+        max_tokens=_MAX_TOKENS,        # 2000 — the verdict is tiny
+        system=system_text,            # wrapped in a cached system block by llm.parse
+        user=user_prompt,
+        output_format=CritiqueVerdict,
+    )
 ```
 
 A few deliberate choices worth calling out:
 
 - **Cheap by default.** The judge model defaults to `claude-haiku-4-5` (`_JUDGE_MODEL`), and `max_tokens` is capped at `2000` (`_MAX_TOKENS`) — enough for a bool, a short list of strings, and a reason. A small budget keeps the call cheap and non-streaming.
 - **Injectable client.** `client` is passed in, so tests can supply a fake and exercise the logic offline.
-- **Cost-tracked.** The call runs inside `cost.stage("critique")`, so its token spend is attributed to the critique stage.
+- **Cost-tracked.** `llm.parse` runs the call inside `cost.stage("critique")`, so its token spend is attributed to the critique stage.
 - **Overridable.** `model` overrides the judge, and `system_extra` is appended to the cached system prefix when callers need to add context.
 
 ## Applying the verdict
