@@ -58,7 +58,7 @@ Runs all gates comparing `original_text` → `new_text` and returns a `Validatio
 | `original_text` | `str` | The page contents before the edit. |
 | `new_text` | `str` | The candidate rewrite. |
 | `manifest_page` | `ManifestPage \| None` | Manifest entry; controls `allow_frontmatter_edit` and the diff-size budget. |
-| `adapter` | `DocAdapter` | The framework adapter (Mintlify) that knows how to split frontmatter and compute structural signatures. |
+| `adapter` | `DocAdapter` | The framework adapter (e.g. Mintlify or plain Markdown) that knows how to split frontmatter and compute structural signatures. |
 | `check_links` | `bool` (kw-only) | Enables the soft broken-link gate. |
 | `docs_root` | `Path \| None` (kw-only) | Root used to resolve links; required for the link gate to run. |
 

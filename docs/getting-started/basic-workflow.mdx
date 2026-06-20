@@ -27,7 +27,7 @@ Both run through one injectable LLM `client` (wrapped so token usage and estimat
 Stage 1  event capture   (CLI: GitHub event or flags)
 Stage 2  diff extraction  (CLI: diff_local / diff_github)
 Stage 3  impact mapping   (map_impact → impacted pages)
-Stage 4  edit generation  (surgical str-replace edits, optional self-critique)
+Stage 4  edit generation  (surgical str-replace edits, self-critique on by default)
 Stage 5  validation       (validate_page; drop edits that don't pass)
 Stage 6  publish          (PR, or a patch + report)
 ```
@@ -139,9 +139,9 @@ This is the path you'll wire into CI. By default it is a **dry run** — it comp
   <Step title="Generate, critique, and validate edits">
     For each impacted page, docsync generates **surgical string-replace edits** against the original. Pages are processed highest-confidence first, concurrently (bounded by `--max-parallel` / `config.max_parallel_requests`). Each page then runs validation; an edit that fails validation, that can't be applied, or that produces no edits is **dropped** with a recorded note rather than written.
 
-    Two optional gates tighten this further:
+    Additional controls tighten this further:
 
-    - `--self-critique` adversarially re-checks each generated edit against the diff (one extra judge-model call per page) and drops edits the change doesn't justify.
+    - `--self-critique` / `--no-self-critique` adversarially re-checks each generated edit against the diff (one extra judge-model call per page) and drops edits the change doesn't justify. It runs **on by default** (overriding `config.self_critique`); pass `--no-self-critique` to turn it off.
     - `--min-confidence <0-1>` skips the edit stage entirely for pages below that impact confidence, overriding the configured floor — useful for a conservative first rollout.
     - `--polish` runs an opt-in, fact-frozen readability pass after a validated edit, revising the page for a leading summary and scannable structure (one extra edit-model call per page, a larger diff). It overrides `config.readability_pass` and falls back to the surgical edit on any failure, so it never regresses a valid page. Off by default.
 
