@@ -40,6 +40,14 @@ jobs:
       - name: Pytest (full offline suite — no network, no API key)
         run: poetry run pytest -q
 
+      # Manifest-drift signal: the docs repo IS this repo, so the source checkout is `.`.
+      # Soft (non-blocking): a refactor that orphans an anchor should surface here, but a
+      # transient lag between code and manifest must not block an unrelated PR. Flips to a
+      # hard gate by removing continue-on-error once the manifest tracks the code tightly.
+      - name: Doctor (self-docs manifest health — non-blocking)
+        continue-on-error: true
+        run: poetry run docsync doctor --docs-repo . --checkout docsync=.
+
   eval-gate:
     name: mapping-accuracy gate (map-mode)
     runs-on: ubuntu-latest

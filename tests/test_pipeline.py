@@ -12,6 +12,7 @@ import pytest
 
 from docsync import pipeline
 from docsync.config import load_config, load_manifest, save_cursors
+from docsync.critique import CritiqueVerdict
 from docsync.models import (
     ChangedFile,
     CodeDiff,
@@ -124,6 +125,70 @@ def test_pipeline_applies_validated_edit(docs_repo: Path):
     assert "/alerts/bulk" in o.new_content
     # title/description preserved (frontmatter gate).
     assert 'title: "API Gateway"' in o.new_content
+
+
+class _CritiqueClient:
+    """JudgeVerdict, PageEdit, and a scripted CritiqueVerdict (default-on critique)."""
+
+    def __init__(self, verdict: JudgeVerdict, edit: PageEdit, critique: CritiqueVerdict):
+        self.messages = _FakeMessages(
+            {"JudgeVerdict": verdict, "PageEdit": edit, "CritiqueVerdict": critique}
+        )
+
+
+def _critique_setup(docs_repo: Path):
+    config = load_config(docs_repo)
+    manifest = load_manifest(docs_repo)
+    edit = PageEdit(
+        edits=[
+            EditOp(
+                find="| POST | /alerts | Ingest an alert |",
+                replace=(
+                    "| POST | /alerts | Ingest an alert |\n"
+                    "| POST | /alerts/bulk | Bulk-ingest alerts |"
+                ),
+                rationale="router_setup.py registers the new /alerts/bulk route",
+            )
+        ]
+    )
+    # The critique rejects the only op (claims it's not justified by the diff).
+    critique = CritiqueVerdict(
+        faithful=False,
+        rejected_finds=["| POST | /alerts | Ingest an alert |"],
+        reason="op not justified by the diff",
+    )
+    client = _CritiqueClient(
+        JudgeVerdict(page_path="x", affected=True, confidence=0.9, reason="r"), edit, critique
+    )
+    return config, manifest, client
+
+
+def test_pipeline_self_critique_on_by_default_drops_unfaithful_op(docs_repo: Path):
+    # No self_critique arg → config.self_critique (True) applies. The critique rejects
+    # the sole op, so nothing survives and the page is dropped, not edited.
+    config, manifest, client = _critique_setup(docs_repo)
+    assert config.self_critique is True  # the new default
+
+    result = pipeline.run(_diff(), docs_repo, config, manifest, client=client)
+
+    assert result.changed() == []
+    o = result.outcomes[0]
+    assert o.applied is False
+    assert "dropped by self-critique" in o.note
+
+
+def test_pipeline_no_self_critique_keeps_op(docs_repo: Path):
+    # Explicit override turns critique off → the op is never re-checked and the edit
+    # applies, proving the default is what drops it (not some other gate).
+    config, manifest, client = _critique_setup(docs_repo)
+
+    result = pipeline.run(
+        _diff(), docs_repo, config, manifest, client=client, self_critique=False
+    )
+
+    changed = result.changed()
+    assert len(changed) == 1
+    assert "/alerts/bulk" in changed[0].new_content
 
 
 def test_pipeline_drops_oversize_edit(docs_repo: Path):

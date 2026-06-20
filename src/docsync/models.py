@@ -268,6 +268,13 @@ class DocsyncConfig(BaseModel):
     # LLM pass that revises it for a leading summary + scannable structure. Off by default
     # — adds an edit-model call per produced page; the CLI `--polish` flag toggles it.
     readability_pass: bool = False
+    # Adversarial self-critique: after the edit model returns ops, a judge-model pass
+    # drops any op not justified by the diff (catches non-structural hallucinations the
+    # validation gates can't — an invented flag, a described-but-absent change). ON by
+    # default: it's one cheap judge call per edited page and the safety is worth it; the
+    # CLI `--no-self-critique` flag turns it off. Dropped ops surface in the dashboard's
+    # edit-drop-rate, so over-aggressive critique is observable.
+    self_critique: bool = True
     # Identifier tokens that name source concepts but are too generic to embed well;
     # excluded from the embedding query (e.g. "self", "config", "value").
     stopword_symbols: list[str] = Field(default_factory=list)
