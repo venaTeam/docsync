@@ -121,21 +121,21 @@ if not validation.passed:
 
 ### Concurrency and the shared-diff cache
 
-Pages are independent, so the edit stage runs on a `ThreadPoolExecutor`. The thread-safety story rests on two facts: the shared `MeteredClient` is thread-safe and its meter is lock-guarded, and `_process_page` never mutates shared state.
+Pages are independent, so the edit stage fans out through the shared `run_parallel` helper (a thin wrapper over `ThreadPoolExecutor`). The thread-safety story rests on two facts: the shared `MeteredClient` is thread-safe and its meter is lock-guarded, and `_process_page` never mutates shared state.
 
 One optimization shapes how the threads start. When the run is multi-page *and* the diff is large, `edits.should_cache_diff` returns true and the diff is cached as a shared prompt block. To avoid every thread re-writing the same block, page 1 is processed **serially first** to prime the cache, then the rest fan out and read it:
 
 ```python
-workers = max(1, min(config.max_parallel_requests, len(to_edit)))
-if workers <= 1:
-    edited = [_process_page(p) for p in to_edit]
-elif cache_diff:
+if cache_diff and len(to_edit) > 1:
+    # Prime the shared-diff cache on page 1 (serial), then fan out the rest.
     primed = _process_page(to_edit[0])
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        edited = [primed, *executor.map(_process_page, to_edit[1:])]
+    rest = run_parallel(_process_page, to_edit[1:], config.max_parallel_requests)
+    edited = [primed, *rest]
+else:
+    edited = run_parallel(_process_page, to_edit, config.max_parallel_requests)
 ```
 
-`executor.map` preserves input order, so the resulting `PipelineResult` is deterministic. `result.changed()` returns the pages with applied, validated edits — exactly the set the CLI will write to disk and open as a PR.
+`run_parallel` preserves input order, so the resulting `PipelineResult` is deterministic. `result.changed()` returns the pages with applied, validated edits — exactly the set the CLI will write to disk and open as a PR.
 
 ## The bootstrap pipeline: docs from a snapshot
 
@@ -175,15 +175,16 @@ Symbol extraction is language-dispatched in `extract_symbols`: Python uses the A
 `plan_docs` is the heart of bootstrap. It gathers what already exists (`_existing_page_paths` on disk plus the adapter's `nav_routes`), builds a planner prompt, and makes a **single judge-model call** that returns a `DocPlan`.
 
 ```python
-with cost.stage("plan"):
-    resp = client.messages.parse(
-        model=config.models.judge_model,
-        max_tokens=_PLAN_MAX_TOKENS,
-        system=[{"type": "text", "text": system}],
-        messages=[{"role": "user", "content": user}],
-        output_format=DocPlan,
-    )
-raw_plan: DocPlan = resp.parsed_output
+raw_plan: DocPlan = llm.parse(
+    client,
+    stage="plan",
+    model=config.models.judge_model,
+    max_tokens=_PLAN_MAX_TOKENS,
+    system=system,
+    user=user,
+    output_format=DocPlan,
+    cache_system=False,
+)
 ```
 
 The prompt (built by `build_plan_prompt`) instructs the model to design a real reading flow organized into ordered **sections** (following `SECTION_ORDER`: Getting Started → Concepts → Architecture → Reference → Operations) using three page **kinds**:
@@ -210,7 +211,7 @@ The planner is explicitly told never to propose a page whose path or route alrea
 
 ### B3–B5 — author, validate, emit
 
-For each planned page, bootstrap reads the actual source excerpts it needs. `read_excerpt` reads a file read-only, truncated to a per-file budget, and returns `""` if the file is missing or unreadable — so one bad path can't sink an otherwise-fine page. Authoring uses an Opus, kind-specific prompt and runs in parallel through a `ThreadPoolExecutor`, metered like every other LLM call.
+For each planned page, bootstrap reads the actual source excerpts it needs. `read_excerpt` reads a file read-only, truncated to a per-file budget, and returns `""` if the file is missing or unreadable — so one bad path can't sink an otherwise-fine page. Authoring uses an Opus, kind-specific prompt and runs in parallel through the shared `run_parallel` helper, metered like every other LLM call.
 
 Because there's no original page to diff against, validation uses `validate_new_page` — **absolute gates** rather than the comparative checks of the update path. Surviving pages are written out by `write_bootstrap`, which also emits ordered nav sections and manifest anchors (`merge_manifest_pages` into `MANIFEST_FILE`), producing a `BootstrapResult`.
 

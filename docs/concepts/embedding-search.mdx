@@ -115,17 +115,15 @@ An empty docs tree is handled explicitly: no chunks means an empty `(0, 0)` matr
 ```python
 def load_or_build(docs_root, cache_dir, *, model_name=DEFAULT_MODEL, encoder=None, page_paths=None):
     want = chunks_content_hash(list(iter_doc_chunks(docs_root, page_paths)), model_name)
-    if cache_dir is not None:
-        cached = DocIndex.load(cache_dir)
-        if cached is not None and cached.content_hash == want and cached.model_name == model_name:
-            return cached
-    index = build_index(docs_root, model_name=model_name, encoder=encoder, page_paths=page_paths)
-    if cache_dir is not None:
-        index.save(cache_dir)
-    return index
+    return _cached_or_build(
+        cache_dir, DocIndex, want, model_name,
+        lambda: build_index(
+            docs_root, model_name=model_name, encoder=encoder, page_paths=page_paths
+        ),
+    )
 ```
 
-A cached index is reused **only** if both its content hash and model name still match. Any drift in the docs (or a model swap) invalidates the cache and triggers a fresh embedding pass. Passing `cache_dir=None` disables caching entirely and always rebuilds. `DocIndex.load` is defensive: a missing file or corrupt JSON/`.npy` returns `None`, which falls through to a rebuild rather than an error.
+The cache-check/build/save logic lives in a shared `_cached_or_build` helper used by both the doc and code index loaders. A cached index is reused **only** if both its content hash and model name still match. Any drift in the docs (or a model swap) invalidates the cache and triggers a fresh embedding pass. Passing `cache_dir=None` disables caching entirely and always rebuilds. `DocIndex.load` is defensive: a missing file or corrupt JSON/`.npy` returns `None`, and a code index saved to the same dir is rejected too (no `page_paths` key), both falling through to a rebuild rather than an error.
 
 ## Querying the index
 

@@ -132,6 +132,10 @@ adapter.name  # "mintlify"
 
 Only tags in the known-component set are counted, which keeps the signature stable against stray capitalised prose words.
 
+<Note>
+A self-closing tag such as `<Card/>` is its own close, so it increments **both** `"Card"` and `"/Card"` — keeping its open/close counts balanced. This matches `structural_problems` ("self-closing is balanced by definition") so adding a benign self-closing component doesn't trip the additive integrity gate.
+</Note>
+
 #### Recognized components
 
 The adapter restricts counting to this fixed set (`_KNOWN_COMPONENTS`):
