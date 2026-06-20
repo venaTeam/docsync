@@ -51,7 +51,31 @@ def should_cache_diff(diff: CodeDiff, n_pages: int) -> bool:
 
 
 class EditApplicationError(Exception):
-    """Raised when an edit op cannot be applied safely (not found, or ambiguous)."""
+    """Raised when an edit op cannot be applied safely (not found, or ambiguous).
+
+    `ambiguous` distinguishes the two failure modes the strict applier rejects: a
+    `find` that matched zero times (`ambiguous=False` — not found, unfixable by
+    re-prompting) versus one that matched more than once (`ambiguous=True` —
+    non-unique, fixable by regenerating the op with more surrounding context). The
+    pipeline reads this flag to decide whether a bounded retry is worthwhile.
+    """
+
+    def __init__(self, message: str, *, ambiguous: bool):
+        super().__init__(message)
+        self.ambiguous = ambiguous
+
+
+# The hint appended to the user message on the single bounded retry the pipeline
+# issues when a `find` matched more than once. The first attempt's ops were too
+# short to be unique; ask for longer, anchored `find` strings.
+NON_UNIQUE_RETRY_HINT = (
+    "A previous attempt was rejected because at least one `find` string matched the "
+    "page in more than one place, so the edit could not be applied unambiguously. "
+    "Regenerate the edits, making every `find` a LONGER, UNIQUE substring of the "
+    "current page — extend it with the surrounding lines (the line above and/or "
+    "below, a nearby heading, or distinctive adjacent text) until it occurs exactly "
+    "once. Keep the `replace` aligned with the expanded `find`."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -74,12 +98,14 @@ def apply_edits(text: str, edit: PageEdit) -> str:
         if count == 0:
             raise EditApplicationError(
                 f"edit op #{index} not applicable: `find` not found in the current "
-                f"text (rationale: {op.rationale!r})"
+                f"text (rationale: {op.rationale!r})",
+                ambiguous=False,
             )
         if count > 1:
             raise EditApplicationError(
                 f"edit op #{index} ambiguous: `find` occurs {count} times in the "
-                f"current text; it must be unique (rationale: {op.rationale!r})"
+                f"current text; it must be unique (rationale: {op.rationale!r})",
+                ambiguous=True,
             )
         working = working.replace(op.find, op.replace, 1)
     return working
@@ -145,6 +171,7 @@ def build_edit_prompt(
     *,
     rendered_diff: str | None = None,
     include_diff: bool = True,
+    retry_hint: str | None = None,
 ) -> tuple[str, str]:
     """Return `(system_prompt, user_prompt)`.
 
@@ -152,6 +179,8 @@ def build_edit_prompt(
     making an API call. `rendered_diff` reuses a pre-rendered diff (so it isn't
     rendered twice); `include_diff=False` omits the diff from the user message — used
     when it's supplied in a cached system block shared across the run's pages.
+    `retry_hint`, when set, is appended to the user message — the pipeline uses it to
+    ask for a regenerated edit after a non-unique `find` was rejected.
     """
     allow_frontmatter_edit = bool(
         manifest_page is not None and manifest_page.allow_frontmatter_edit
@@ -182,6 +211,8 @@ def build_edit_prompt(
         "change, or an empty edits list with a no_change_reason if the page is not "
         "actually invalidated."
     )
+    if retry_hint:
+        user_prompt += f"\n\n{retry_hint}"
     return system_prompt, user_prompt
 
 
@@ -199,6 +230,7 @@ def generate_page_edit(
     config: DocsyncConfig,
     cache_diff: bool = False,
     client=None,
+    retry_hint: str | None = None,
 ) -> PageEdit:
     """Ask Claude Opus 4.8 for surgical edits to align `page_text` with `diff`.
 
@@ -210,13 +242,17 @@ def generate_page_edit(
     `output_config.effort` (no `budget_tokens`, no sampling params). The invariant
     system prompt is cached (`cache_control: ephemeral`) since it's identical across
     every page in a run.
+
+    `retry_hint` (set by the pipeline on a single bounded retry) is appended to the
+    user message — e.g. to ask for a regenerated op with more surrounding context
+    after a non-unique `find` was rejected.
     """
     client = get_client(client)
 
     rendered = render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)
     system_prompt, user_prompt = build_edit_prompt(
         page_path, page_text, diff, impacted, manifest_page,
-        rendered_diff=rendered, include_diff=not cache_diff,
+        rendered_diff=rendered, include_diff=not cache_diff, retry_hint=retry_hint,
     )
 
     system_blocks: list[dict] = [
