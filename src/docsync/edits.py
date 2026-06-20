@@ -11,8 +11,9 @@ This module is the only place that talks to the Anthropic SDK for edit generatio
 
 from __future__ import annotations
 
-from . import cost
+from . import llm
 from .diffrender import render_diff
+from .llm import get_client
 from .models import (
     CodeDiff,
     DocsyncConfig,
@@ -112,8 +113,13 @@ def _build_system_prompt(allow_frontmatter_edit: bool) -> str:
         )
     lines.extend(
         [
-            "NEVER alter MDX component tag structure (<CardGroup>, <Card>, <Warning>, "
-            "<Note>, etc.) or break mermaid code fences.",
+            "MDX component rules (the page is validated against these — violating them "
+            "drops the edit): you MAY add new leaf components — <Note>, <Tip>, <Warning>, "
+            "<Info>, <Card>, <Step>, <Accordion>, <Tab> — when the diff introduces content "
+            "that warrants one, but ALWAYS as a balanced pair (every <Note> needs its "
+            "</Note>; a self-closing <Card/> is fine). NEVER remove a component, alter a "
+            "container component (<CardGroup>, <Steps>, <Tabs>, <AccordionGroup>), reorder "
+            "or mis-nest tags, or change the number of code/mermaid fences.",
             "Preserve inline backtick code references unless the underlying symbol was "
             "renamed in the diff.",
             "When ADDING content the diff introduces (a new field, route, or parameter), "
@@ -205,10 +211,7 @@ def generate_page_edit(
     system prompt is cached (`cache_control: ephemeral`) since it's identical across
     every page in a run.
     """
-    if client is None:
-        import anthropic
-
-        client = anthropic.Anthropic()
+    client = get_client(client)
 
     rendered = render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)
     system_prompt, user_prompt = build_edit_prompt(
@@ -231,14 +234,14 @@ def generate_page_edit(
             }
         )
 
-    with cost.stage("edit"):
-        resp = client.messages.parse(
-            model=config.models.edit_model,
-            max_tokens=_MAX_TOKENS,
-            thinking={"type": "adaptive"},
-            output_config={"effort": config.models.edit_effort},
-            system=system_blocks,
-            messages=[{"role": "user", "content": user_prompt}],
-            output_format=PageEdit,
-        )
-    return resp.parsed_output
+    return llm.parse(
+        client,
+        stage="edit",
+        model=config.models.edit_model,
+        max_tokens=_MAX_TOKENS,
+        system=system_blocks,
+        user=user_prompt,
+        output_format=PageEdit,
+        thinking=True,
+        effort=config.models.edit_effort,
+    )

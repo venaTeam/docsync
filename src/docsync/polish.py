@@ -17,7 +17,7 @@ well".
 
 from __future__ import annotations
 
-from . import cost, style
+from . import llm, style
 from .adapters.base import DocAdapter
 from .edits import EditApplicationError, apply_edits
 from .models import DocsyncConfig, PageEdit
@@ -86,17 +86,17 @@ def polish_page(page_path: str, page_text: str, kind: str, config: DocsyncConfig
     `PageEdit` output) and meters under the `"polish"` stage. Injectable `client` for tests.
     """
     system, user = build_polish_prompt(page_path, page_text, kind)
-    with cost.stage("polish"):
-        resp = client.messages.parse(
-            model=config.models.edit_model,
-            max_tokens=_MAX_TOKENS,
-            thinking={"type": "adaptive"},
-            output_config={"effort": _POLISH_EFFORT},
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user}],
-            output_format=PageEdit,
-        )
-    return resp.parsed_output
+    return llm.parse(
+        client,
+        stage="polish",
+        model=config.models.edit_model,
+        max_tokens=_MAX_TOKENS,
+        system=system,
+        user=user,
+        output_format=PageEdit,
+        thinking=True,
+        effort=_POLISH_EFFORT,
+    )
 
 
 def _frozen_frontmatter_ok(adapter: DocAdapter, original: str, polished: str) -> bool:

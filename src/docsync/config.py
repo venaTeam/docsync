@@ -62,24 +62,13 @@ def load_manifest(docs_repo: Path) -> Manifest:
 
 
 def _manifest_page_dict(page: ManifestPage) -> dict:
-    """A plain ordered dict for one new manifest page (omitting default knobs)."""
-    sources: list[dict] = []
-    for s in page.sources:
-        src: dict = {"repo": s.repo}
-        if s.globs:
-            src["globs"] = list(s.globs)
-        if s.symbols:
-            src["symbols"] = list(s.symbols)
-        sources.append(src)
-    out: dict = {"path": page.path, "sources": sources}
-    # Only emit guardrails that differ from the model defaults, to keep the diff small.
-    if page.max_diff_lines != ManifestPage.model_fields["max_diff_lines"].default:
-        out["max_diff_lines"] = page.max_diff_lines
-    if page.allow_frontmatter_edit:
-        out["allow_frontmatter_edit"] = True
-    if page.judge_required:
-        out["judge_required"] = True
-    return out
+    """A plain dict for one new manifest page, omitting unmodified default knobs.
+
+    `exclude_defaults` drops empty `globs`/`symbols` and any guardrail left at its
+    default (`max_diff_lines`, `allow_frontmatter_edit`, …), keeping the appended YAML
+    minimal. Fields are emitted in declaration order (`path`, `sources`, then knobs).
+    """
+    return page.model_dump(mode="json", exclude_defaults=True)
 
 
 _FRESH_MANIFEST_HEADER = (

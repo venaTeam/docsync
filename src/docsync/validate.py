@@ -133,6 +133,19 @@ def validate_new_page(
 # ---------------------------------------------------------------------------
 
 
+def _is_blank(text: str) -> bool:
+    """True for empty or whitespace-only content."""
+    return not text or not text.strip()
+
+
+def _fence_parity_failure(signature: dict) -> list[str]:
+    """An odd number of ``` markers means an unterminated code fence."""
+    fence_count = signature.get("fence_count", 0)
+    if fence_count % 2 != 0:
+        return [f"unbalanced code fences: {fence_count} ``` markers (must be even)"]
+    return []
+
+
 def _check_frontmatter_complete(new_text: str, adapter: DocAdapter) -> list[str]:
     """Frontmatter must parse and carry non-empty values for every frozen key."""
     try:
@@ -148,15 +161,11 @@ def _check_frontmatter_complete(new_text: str, adapter: DocAdapter) -> list[str]
 
 
 def _check_even_fences(new_text: str, adapter: DocAdapter) -> list[str]:
-    """An odd number of ``` markers means an unterminated code fence."""
-    fence_count = adapter.structural_signature(new_text).get("fence_count", 0)
-    if fence_count % 2 != 0:
-        return [f"unbalanced code fences: {fence_count} ``` markers (must be even)"]
-    return []
+    return _fence_parity_failure(adapter.structural_signature(new_text))
 
 
 def _check_min_length(new_text: str) -> list[str]:
-    if not new_text or not new_text.strip():
+    if _is_blank(new_text):
         return ["new content is empty"]
     if len(new_text) < _NEW_PAGE_MIN_CHARS:
         return [
@@ -265,11 +274,7 @@ def _check_structure(original_text: str, new_text: str, adapter: DocAdapter) -> 
                 f"structural element {key!r} count changed: {old_count} -> {new_count}"
             )
 
-    new_fence_count = new_sig.get("fence_count", 0)
-    if new_fence_count % 2 != 0:
-        failures.append(
-            f"unbalanced code fences: {new_fence_count} ``` markers (must be even)"
-        )
+    failures.extend(_fence_parity_failure(new_sig))
 
     return failures
 
@@ -339,7 +344,7 @@ def _check_diff_size(
 
 
 def _check_not_truncated(original_text: str, new_text: str) -> list[str]:
-    if not new_text or not new_text.strip():
+    if _is_blank(new_text):
         return ["new content is empty"]
 
     original_len = len(original_text)

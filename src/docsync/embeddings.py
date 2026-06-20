@@ -136,6 +136,43 @@ def _normalize(mat: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def _save_index(cache_dir: Path, vectors: np.ndarray, meta: dict) -> None:
+    """Persist an index's vectors (`.npy`) + JSON metadata to `cache_dir`."""
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    np.save(cache_dir / _VECTORS_FILE, vectors)
+    (cache_dir / _META_FILE).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def _load_index_files(cache_dir: Path) -> tuple[dict, np.ndarray] | None:
+    """Read `(meta, vectors)` from `cache_dir`, or None if absent/corrupt."""
+    cache_dir = Path(cache_dir)
+    meta_path = cache_dir / _META_FILE
+    vec_path = cache_dir / _VECTORS_FILE
+    if not meta_path.exists() or not vec_path.exists():
+        return None
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8")), np.load(vec_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _cached_or_build(cache_dir, index_cls, want: str, model_name: str, build):
+    """Return a cached index whose hash/model still match, else `build()` + save.
+
+    `cache_dir=None` disables caching (always builds fresh). Shared by both the doc
+    and code index loaders — only `build` and the index class differ.
+    """
+    if cache_dir is not None:
+        cached = index_cls.load(cache_dir)
+        if cached is not None and cached.content_hash == want and cached.model_name == model_name:
+            return cached
+    index = build()
+    if cache_dir is not None:
+        index.save(cache_dir)
+    return index
+
+
 @dataclass
 class DocIndex:
     """A normalized embedding matrix over doc chunks, with provenance for caching."""
@@ -146,32 +183,23 @@ class DocIndex:
     vectors: np.ndarray  # (n_chunks, dim), L2-normalized
 
     def save(self, cache_dir: Path) -> None:
-        cache_dir = Path(cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        np.save(cache_dir / _VECTORS_FILE, self.vectors)
-        (cache_dir / _META_FILE).write_text(
-            json.dumps(
-                {
-                    "model_name": self.model_name,
-                    "content_hash": self.content_hash,
-                    "page_paths": self.page_paths,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        _save_index(
+            cache_dir,
+            self.vectors,
+            {
+                "model_name": self.model_name,
+                "content_hash": self.content_hash,
+                "page_paths": self.page_paths,
+            },
         )
 
     @classmethod
     def load(cls, cache_dir: Path) -> "DocIndex | None":
-        cache_dir = Path(cache_dir)
-        meta_path = cache_dir / _META_FILE
-        vec_path = cache_dir / _VECTORS_FILE
-        if not meta_path.exists() or not vec_path.exists():
+        loaded = _load_index_files(cache_dir)
+        if loaded is None:
             return None
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            vectors = np.load(vec_path)
-        except (OSError, ValueError, json.JSONDecodeError):
+        meta, vectors = loaded
+        if "page_paths" not in meta:  # a code index saved here by mistake — ignore it
             return None
         return cls(
             model_name=meta["model_name"],
@@ -211,16 +239,12 @@ def load_or_build(
     With `cache_dir=None` caching is disabled (always builds fresh).
     """
     want = chunks_content_hash(list(iter_doc_chunks(docs_root, page_paths)), model_name)
-    if cache_dir is not None:
-        cached = DocIndex.load(cache_dir)
-        if cached is not None and cached.content_hash == want and cached.model_name == model_name:
-            return cached
-    index = build_index(
-        docs_root, model_name=model_name, encoder=encoder, page_paths=page_paths
+    return _cached_or_build(
+        cache_dir, DocIndex, want, model_name,
+        lambda: build_index(
+            docs_root, model_name=model_name, encoder=encoder, page_paths=page_paths
+        ),
     )
-    if cache_dir is not None:
-        index.save(cache_dir)
-    return index
 
 
 def query_index(
@@ -308,34 +332,23 @@ class CodeIndex:
     vectors: np.ndarray  # (n_units, dim), L2-normalized
 
     def save(self, cache_dir: Path) -> None:
-        cache_dir = Path(cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        np.save(cache_dir / _VECTORS_FILE, self.vectors)
-        (cache_dir / _META_FILE).write_text(
-            json.dumps(
-                {
-                    "model_name": self.model_name,
-                    "content_hash": self.content_hash,
-                    # JSON has no tuples — store as [repo, path] pairs, restore on load.
-                    "unit_keys": [[repo, path] for repo, path in self.unit_keys],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        _save_index(
+            cache_dir,
+            self.vectors,
+            {
+                "model_name": self.model_name,
+                "content_hash": self.content_hash,
+                # JSON has no tuples — store as [repo, path] pairs, restore on load.
+                "unit_keys": [[repo, path] for repo, path in self.unit_keys],
+            },
         )
 
     @classmethod
     def load(cls, cache_dir: Path) -> "CodeIndex | None":
-        cache_dir = Path(cache_dir)
-        meta_path = cache_dir / _META_FILE
-        vec_path = cache_dir / _VECTORS_FILE
-        if not meta_path.exists() or not vec_path.exists():
+        loaded = _load_index_files(cache_dir)
+        if loaded is None:
             return None
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            vectors = np.load(vec_path)
-        except (OSError, ValueError, json.JSONDecodeError):
-            return None
+        meta, vectors = loaded
         if "unit_keys" not in meta:  # a doc index saved here by mistake — ignore it
             return None
         return cls(
@@ -391,14 +404,10 @@ def load_or_build_code_index(
     want = code_units_content_hash(
         [k for k, _, _ in rows], [s for _, s, _ in rows], model_name
     )
-    if cache_dir is not None:
-        cached = CodeIndex.load(cache_dir)
-        if cached is not None and cached.content_hash == want and cached.model_name == model_name:
-            return cached
-    index = build_code_index(digests, model_name=model_name, encoder=encoder)
-    if cache_dir is not None:
-        index.save(cache_dir)
-    return index
+    return _cached_or_build(
+        cache_dir, CodeIndex, want, model_name,
+        lambda: build_code_index(digests, model_name=model_name, encoder=encoder),
+    )
 
 
 def query_code_index(
