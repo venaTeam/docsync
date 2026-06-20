@@ -3,7 +3,7 @@ title: "Cost Optimization Strategies"
 description: "Reduce LLM API spend and tune token usage in docsync by capping per-stage tokens, pricing each model accurately, and monitoring run cost with UsageMeter and render_usage_md."
 ---
 
-Every docsync LLM stage — the impact judge, edit generation, self-critique, the bootstrap planner, and page authoring — runs through an injectable `client`, and that client is wrapped once in a `MeteredClient`. The wrapper records token `usage` off every response, so cost is accumulated centrally without touching individual call sites. This guide walks through the three levers you control: **planning** (token caps), **batching/attribution** (per-stage metering), and **monitoring** (rendered cost summaries).
+Every docsync LLM stage — the impact judge, edit generation, self-critique, the bootstrap planner, page authoring, and the opt-in readability polish (metered under the `polish` stage, off by default, one extra edit-model call per produced page) — runs through an injectable `client`, and that client is wrapped once in a `MeteredClient`. The wrapper records token `usage` off every response, so cost is accumulated centrally without touching individual call sites. This guide walks through the three levers you control: **planning** (token caps), **batching/attribution** (per-stage metering), and **monitoring** (rendered cost summaries).
 
 <Note>
   All dollar figures docsync reports are **estimates**. `RunUsage.estimated` is always `True` because prices come from a built-in table (`PRICING`) that can drift from your actual Anthropic bill. Use the numbers for relative comparison and budgeting, not reconciliation.
