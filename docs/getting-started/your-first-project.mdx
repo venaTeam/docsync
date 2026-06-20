@@ -300,3 +300,7 @@ embeddings extra isn't installed.
   `--min-confidence`, `--max-pages`, and `--max-parallel`.
 - Add `--self-critique` to a run to adversarially re-check each generated edit
   against the diff and drop edits the change doesn't justify.
+- Add `--polish` (or set `readability_pass: true` in `config.yml`) to run a
+  fact-frozen readability pass after each edit or authored page — revising it for
+  a leading summary and scannable structure. It's off by default and adds an
+  edit-model call per produced page; use `--no-polish` to override the config.

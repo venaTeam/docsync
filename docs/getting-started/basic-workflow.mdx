@@ -82,7 +82,7 @@ You need a docs repo checkout and a way for the LLM calls to authenticate. Pick 
     </Warning>
   </Step>
   <Step title="Author the pages">
-    Each planned page is authored into full MDX with a kind-specific prompt, in parallel. Every call is metered, so cost accrues on the run's usage.
+    Each planned page is authored into full MDX with a kind-specific prompt, in parallel. Every call is metered, so cost accrues on the run's usage. With `--polish` (opt-in, overriding `config.readability_pass`), each authored page then runs a fact-frozen readability pass for a leading summary and scannable structure, falling back to the original text on any failure.
   </Step>
   <Step title="Validate and emit">
     New pages pass through `validate_new_page` — absolute gates, since there is no original to diff against. Surviving pages are written to disk along with ordered nav sections and manifest anchors, then opened as a PR.
@@ -143,6 +143,7 @@ This is the path you'll wire into CI. By default it is a **dry run** — it comp
 
     - `--self-critique` adversarially re-checks each generated edit against the diff (one extra judge-model call per page) and drops edits the change doesn't justify.
     - `--min-confidence <0-1>` skips the edit stage entirely for pages below that impact confidence, overriding the configured floor — useful for a conservative first rollout.
+    - `--polish` runs an opt-in, fact-frozen readability pass after a validated edit, revising the page for a leading summary and scannable structure (one extra edit-model call per page, a larger diff). It overrides `config.readability_pass` and falls back to the surgical edit on any failure, so it never regresses a valid page. Off by default.
 
     <Note>
       `--use-embeddings` (on by default) is a recall-net that also surfaces drift on pages the manifest doesn't anchor. It degrades gracefully to anchors-only if the embeddings extra isn't installed. `--max-pages` caps how many pages reach the (expensive) edit stage; the rest are reported, not edited.
