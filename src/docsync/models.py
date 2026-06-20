@@ -278,6 +278,12 @@ class DocsyncConfig(BaseModel):
     embedding_floor: float = 0.2
     # Max embedding candidates surfaced per diff (before the judge filters them).
     embedding_top_k: int = 5
+    # --- cost management (dashboard) ---
+    # Soft monthly spend target in USD. When set, `docsync dashboard` shows current-
+    # month spend, a projected month-end figure, and an over-budget warning banner.
+    # None = no budget tracking (the dashboard still shows raw cost). Advisory only —
+    # docsync never blocks a run on it.
+    monthly_budget_usd: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +441,83 @@ class BootstrapResult(BaseModel):
     def authored(self) -> list[PageOutcome]:
         """Pages that were authored, validated, and are ready to write."""
         return [o for o in self.outcomes if o.applied and o.new_content is not None]
+
+
+# ---------------------------------------------------------------------------
+# Run history (history.py) — one distilled record per run, for the dashboard
+# ---------------------------------------------------------------------------
+
+
+DashboardCommand = Literal["run", "bootstrap"]
+# "opened" = a PR was opened; "patched" = changes written without a PR; "no_change" =
+# a clean run that produced nothing to write; "dry_run" = computed only.
+RunStatus = Literal["opened", "patched", "no_change", "dry_run", "error"]
+
+
+class PageRecord(BaseModel):
+    """A distilled, history-safe summary of one page's outcome.
+
+    Deliberately omits page/source body text: only counts and the model's per-edit
+    `rationale` are kept, so the persisted history never carries doc content (which
+    could contain secrets) and stays one tiny line per run.
+    """
+
+    page_path: str
+    applied: bool = False
+    note: str = ""
+    edit_count: int = 0
+    rationales: list[str] = Field(default_factory=list)  # EditOp.rationale — the "why"
+    # A bounded unified diff of the page (original -> new) — the "what", so the dashboard
+    # can show the actual change, not just a summary. Capped in history.py; None when no
+    # before-text is available (e.g. bootstrap-authored pages). Doc content only (the
+    # published artifact) — never raw source excerpts or the full untouched page body.
+    diff: Optional[str] = None
+    validation_passed: Optional[bool] = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ModelStageRecord(BaseModel):
+    """Per-(model, stage) cost summary for one run — the dashboard sums these."""
+
+    model: str
+    stage: Optional[str] = None
+    calls: int = 0
+    tokens: int = 0  # billable prompt tokens + output tokens
+    cost_usd: float = 0.0
+
+
+class UsageRecord(BaseModel):
+    """A flattened, dashboard-friendly view of a run's `RunUsage`."""
+
+    cost_usd: float = 0.0
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_hit_rate: float = 0.0
+    estimated: bool = True
+    by_model: list[ModelStageRecord] = Field(default_factory=list)
+
+
+class RunRecord(BaseModel):
+    """One persisted docsync run — the unit the dashboard aggregates.
+
+    `counts` is a flat dict so `run` and `bootstrap` share one shape: a `run` fills
+    impacted/updated/dropped; a `bootstrap` fills planned/authored/skipped.
+    """
+
+    schema_version: int = 1
+    timestamp: str  # ISO-8601 UTC
+    command: DashboardCommand
+    status: RunStatus = "opened"
+    repo: str
+    base_sha: Optional[str] = None
+    head_sha: Optional[str] = None
+    pr_number: Optional[int] = None
+    pr_title: Optional[str] = None
+    pr_url: Optional[str] = None
+    counts: dict[str, int] = Field(default_factory=dict)
+    pages: list[PageRecord] = Field(default_factory=list)
+    usage: Optional[UsageRecord] = None
 
 
 # ---------------------------------------------------------------------------

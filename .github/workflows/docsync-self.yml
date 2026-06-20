@@ -55,6 +55,21 @@ jobs:
           git config user.name  "docsync[bot]"
           git config user.email "docsync-bot@users.noreply.github.com"
 
+      # Best-effort: pull the run-history artifact from the most recent successful run
+      # so the dashboard accumulates across CI runs. runs.jsonl is gitignored and is
+      # NEVER committed into a docs PR — it travels only as an artifact. First run (or
+      # an expired artifact) simply starts fresh; the `|| true` keeps that non-fatal.
+      - name: Restore prior run history (best-effort)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p .docsync/state
+          PRIOR=$(gh run list --workflow=docsync-self.yml --status=success \
+            --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+          if [ -n "$PRIOR" ]; then
+            gh run download "$PRIOR" --name docsync-history --dir .docsync/state || true
+          fi
+
       - name: Sync docs with the code change (opens a PR; never auto-merges)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -77,3 +92,26 @@ jobs:
               --from-event "$GITHUB_EVENT_PATH" \
               --docs-repo . --backend api --open-pr --polish
           fi
+
+      # Render the activity dashboard from the (restored + this-run) history and publish
+      # both as artifacts. Static HTML only — `--serve` is never used in CI. Runs even if
+      # the sync step failed, so a failed run still updates the dashboard.
+      - name: Build the docsync dashboard
+        if: always()
+        run: docsync dashboard --docs-repo . --out docsync-dashboard.html
+
+      - name: Upload the dashboard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsync-dashboard
+          path: docsync-dashboard.html
+          if-no-files-found: ignore
+
+      - name: Upload the run history (consumed by the next run's restore step)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docsync-history
+          path: .docsync/state/runs.jsonl
+          if-no-files-found: ignore
