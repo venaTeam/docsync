@@ -60,6 +60,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # reads the diff via API (push) + opens the PR
         run: |
+          # --polish: after each surgical edit, run a fact-frozen readability pass
+          # (leading summary + scannable structure). Opt-in, one extra edit-model call
+          # per updated page; falls back to the surgical edit on any failure.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Manual run: docsync can't parse a workflow_dispatch event, so diff the
             # latest commit against its parent from the full local checkout instead
@@ -68,9 +71,9 @@ jobs:
             # which matches the manifest anchors (impact._repo_key).
             docsync run \
               --src-repo "$GITHUB_WORKSPACE" --base HEAD~1 --head HEAD \
-              --docs-repo . --backend api --open-pr
+              --docs-repo . --backend api --open-pr --polish
           else
             docsync run \
               --from-event "$GITHUB_EVENT_PATH" \
-              --docs-repo . --backend api --open-pr
+              --docs-repo . --backend api --open-pr --polish
           fi

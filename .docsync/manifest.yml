@@ -218,6 +218,9 @@ pages:
           - SECTION_ORDER
           - RepoDigest
           - AuthoredPage
+    # models.py is a grab-bag; route this page through the cheap judge so an unrelated
+    # field change is rejected there instead of autopassing into the Opus editor.
+    judge_required: true
   - path: reference/page-format.mdx
     sources:
       - repo: docsync
@@ -293,6 +296,9 @@ pages:
           - ChangedFile
           - parse_event
           - load_event
+    # Anchors the shared models.py for its data contracts; judge-gate it so an unrelated
+    # models.py field change doesn't autopass this page into the Opus editor.
+    judge_required: true
   - path: reference/critique-rules.mdx
     sources:
       - repo: docsync
@@ -305,6 +311,9 @@ pages:
           - EvalReport
           - GoldenCase
           - build_critique_prompt
+    # Anchors the shared models.py for its verdict/eval models; judge-gate it so an
+    # unrelated models.py field change doesn't autopass this page into the Opus editor.
+    judge_required: true
   - path: operations/ci-cd-integration.mdx
     sources:
       - repo: docsync
