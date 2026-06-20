@@ -11,9 +11,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from docsync import style
 from docsync.bootstrap import (
+    _extract_api_surface,
     _gather_excerpts,
     _repo_units,
+    _surface_for_file,
     author_page,
     build_author_prompt,
     plan_docs,
@@ -180,6 +183,57 @@ def test_author_prompt_is_kind_specific(tmp_path):
     assert "CONCEPT" in sys_c and "narrative" in sys_c
     assert "REFERENCE" in sys_r
     assert sys_c != sys_r
+
+
+def test_author_prompt_carries_style_rules(tmp_path):
+    # The shared documentation-craft rules (style.py) reach the author system prompt,
+    # and the user prompt asks for the leading summary + BLUF description.
+    sys_r, user = build_author_prompt(_page("r.mdx", kind="reference"), [("gw/x.py", "code")])
+    assert style.INVERTED_PYRAMID in sys_r
+    assert style.SCANNABILITY in sys_r
+    assert style.kind_structure("reference") in sys_r
+    assert style.DIATAXIS_DISCIPLINE in sys_r
+    assert "lead summary" in user and "BLUF" in user
+
+
+# ---------------------------------------------------------------------------
+# API-surface extraction (F2)
+# ---------------------------------------------------------------------------
+
+_SRC = (
+    '"""module docstring."""\n'
+    "def get_alerts(tenant_id: str) -> list:\n"
+    '    """Return alerts for a tenant."""\n'
+    "    return []\n\n"
+    "class AlertManager:\n"
+    '    """Manages alerts."""\n'
+    "    def refresh(self):\n        pass\n"
+    "    def _hidden(self):\n        pass\n"
+)
+
+
+def test_extract_api_surface_lists_signatures_and_docs(tmp_path):
+    page = _page("r.mdx", symbols=("get_alerts",))
+    surface = _extract_api_surface([("gw/src/routes/alerts.py", _SRC)], page)
+    assert "def get_alerts(tenant_id: str) -> list" in surface
+    assert "Return alerts for a tenant." in surface
+    assert "class AlertManager" in surface
+    assert "methods: refresh" in surface
+    assert "_hidden" not in surface  # private methods excluded
+
+
+def test_surface_regex_fallback_on_unparseable(tmp_path):
+    lines = _surface_for_file("def broken(:\n    pass\n", set(), [])
+    assert lines and "def broken" in lines[0]
+
+
+def test_author_prompt_includes_api_surface_block(tmp_path):
+    _, user = build_author_prompt(_page("r.mdx", symbols=("get_alerts",)),
+                                  [("gw/src/routes/alerts.py", _SRC)])
+    assert "# API surface" in user
+    assert "def get_alerts" in user
+    # surface precedes the raw source dump
+    assert user.index("# API surface") < user.index("# Source code this page documents")
 
 
 def test_run_bootstrap_multi_repo_meters_plan_and_author(tmp_path):

@@ -130,3 +130,38 @@ def test_base_or_cursor_errors_without_a_cursor(tmp_path: Path):
     docs = _cursored_docs_repo(tmp_path, {})
     with pytest.raises(typer.BadParameter):
         _base_or_cursor(docs, "docsync")
+
+
+# ---------------------------------------------------------------------------
+# --polish flag wiring (config.readability_pass) on bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _polish_smoke(tmp_path: Path, monkeypatch, extra_args: list[str]) -> dict:
+    from docsync.models import BootstrapResult
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    src = tmp_path / "svc"
+    src.mkdir()
+    captured: dict = {}
+
+    def _fake_run_bootstrap(repos, docs_repo, config, **kwargs):
+        captured["readability_pass"] = config.readability_pass
+        return BootstrapResult(repo="svc")  # no authored pages -> clean early exit
+
+    monkeypatch.setattr("docsync.llm_backends.get_client", lambda backend: object())
+    monkeypatch.setattr("docsync.bootstrap.run_bootstrap", _fake_run_bootstrap)
+    result = runner.invoke(
+        app, ["bootstrap", "--docs-repo", str(docs), "--src-repo", f"svc={src}", *extra_args]
+    )
+    assert result.exit_code == 0, result.output
+    return captured
+
+
+def test_bootstrap_polish_flag_enables_readability_pass(tmp_path: Path, monkeypatch):
+    assert _polish_smoke(tmp_path, monkeypatch, ["--polish"])["readability_pass"] is True
+
+
+def test_bootstrap_defaults_to_no_polish(tmp_path: Path, monkeypatch):
+    assert _polish_smoke(tmp_path, monkeypatch, [])["readability_pass"] is False

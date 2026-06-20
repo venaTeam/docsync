@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import critique as critique_mod
 from . import edits as edits_mod
+from . import polish as polish_mod
 from .config import DOCSYNC_DIR
 from .cost import MeteredClient, UsageMeter
 from .impact import map_impact
@@ -165,9 +166,20 @@ def run(
                 outcome.note = "dropped by validation: " + "; ".join(validation.failures)
                 return outcome
 
+            # Opt-in readability polish on the validated edit (fact-frozen; falls back to
+            # the surgical edit on any failure). Off by default — adds an edit-model call
+            # and produces a larger, prose-level diff than the surgical edit alone.
+            polish_note = ""
+            if config.readability_pass and client is not None:
+                kind = "concept" if (manifest_page and manifest_page.judge_required) else "reference"
+                new_text, _polished, polish_note = polish_mod.polish_text(
+                    page.page_path, new_text, kind, config, adapter,
+                    client=client, check_links=check_links, docs_root=docs_root,
+                )
+
             outcome.new_content = new_text
             outcome.applied = True
-            outcome.note = "ready"
+            outcome.note = "ready" + (f" · {polish_note}" if polish_note else "")
             return outcome
         except Exception as exc:  # noqa: BLE001 - a worker must never raise
             outcome.note = f"unexpected error: {type(exc).__name__}: {exc}"

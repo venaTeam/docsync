@@ -116,6 +116,13 @@ def _build_system_prompt(allow_frontmatter_edit: bool) -> str:
             "<Note>, etc.) or break mermaid code fences.",
             "Preserve inline backtick code references unless the underlying symbol was "
             "renamed in the diff.",
+            "When ADDING content the diff introduces (a new field, route, or parameter), "
+            "match the page's existing structure — add a row to a table that exists, a "
+            "bullet to a list that exists; don't inject a prose paragraph where the page "
+            "uses a table or list.",
+            "If the change alters what the page is fundamentally about, update the opening "
+            "lead sentence so it still states the most important thing first; otherwise "
+            "leave the lead untouched.",
             "If the page is NOT actually invalidated by this diff, return an empty "
             "edits list and set no_change_reason explaining why.",
         ]
