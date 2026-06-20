@@ -12,6 +12,10 @@ dist/
 .docsync/state/embeddings/
 *.index.npy
 
+# docsync run history + dashboard (local/CI-artifact only — never committed into a docs PR)
+.docsync/state/runs.jsonl
+docsync-dashboard.html
+
 # docsync dry-run artifacts (the patch + report are inspection-only)
 *.patch
 docsync.patch
