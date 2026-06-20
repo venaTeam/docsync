@@ -11,10 +11,26 @@ validates against pydantic models directly.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+def _dedupe_preserving_order(items: Iterable[str]) -> list[str]:
+    """First-seen-wins dedupe (``dict.fromkeys`` keeps insertion order)."""
+    return list(dict.fromkeys(items))
+
+
+def _prompt_tokens(usage) -> int:
+    """Billable prompt tokens = fresh input + cache writes + cache reads."""
+    return (
+        usage.input_tokens
+        + usage.cache_creation_input_tokens
+        + usage.cache_read_input_tokens
+    )
+
 
 # ---------------------------------------------------------------------------
 # Stage 2 — diff extraction (diff.py)
@@ -60,12 +76,7 @@ class CodeDiff(BaseModel):
         return out
 
     def all_symbols(self) -> list[str]:
-        seen: list[str] = []
-        for f in self.files:
-            for s in f.changed_symbols:
-                if s not in seen:
-                    seen.append(s)
-        return seen
+        return _dedupe_preserving_order(s for f in self.files for s in f.changed_symbols)
 
 
 # ---------------------------------------------------------------------------
@@ -94,12 +105,7 @@ class RepoDigest(BaseModel):
     units: list[SourceUnit] = Field(default_factory=list)
 
     def all_symbols(self) -> list[str]:
-        seen: list[str] = []
-        for u in self.units:
-            for s in u.symbols:
-                if s not in seen:
-                    seen.append(s)
-        return seen
+        return _dedupe_preserving_order(s for u in self.units for s in u.symbols)
 
 
 # Page kinds steer both the author prompt and how the page is kept live:
@@ -366,11 +372,7 @@ class ModelUsage(BaseModel):
 
     @property
     def prompt_tokens(self) -> int:
-        return (
-            self.input_tokens
-            + self.cache_creation_input_tokens
-            + self.cache_read_input_tokens
-        )
+        return _prompt_tokens(self)
 
 
 class RunUsage(BaseModel):
@@ -392,11 +394,7 @@ class RunUsage(BaseModel):
 
     @property
     def prompt_tokens(self) -> int:
-        return (
-            self.input_tokens
-            + self.cache_creation_input_tokens
-            + self.cache_read_input_tokens
-        )
+        return _prompt_tokens(self)
 
 
 # ---------------------------------------------------------------------------

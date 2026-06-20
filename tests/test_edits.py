@@ -164,7 +164,10 @@ def test_build_edit_prompt_system_forbids_frontmatter_and_components():
         "api/alerts.mdx", "# page\n", diff, impacted, manifest_page=None
     )
     assert "NEVER change the YAML frontmatter" in system_prompt
-    assert "NEVER alter MDX component tag structure" in system_prompt
+    # The component invariant is stated as the validated rule: add balanced leaf
+    # components, but never remove one or alter a container.
+    assert "NEVER remove a component" in system_prompt
+    assert "alter a container component" in system_prompt
     assert "NEVER rewrite the whole file" in system_prompt
 
 

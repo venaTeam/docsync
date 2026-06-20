@@ -10,7 +10,6 @@ No git side effects here — the CLI decides whether to write files / open a PR.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import critique as critique_mod
@@ -26,6 +25,7 @@ from .models import (
     PageOutcome,
     PipelineResult,
 )
+from .pool import run_parallel
 from .validate import get_adapter, validate_page
 
 
@@ -185,19 +185,15 @@ def run(
             outcome.note = f"unexpected error: {type(exc).__name__}: {exc}"
             return outcome
 
-    # Run the edit stage concurrently — pages are independent; map() preserves order.
-    workers = max(1, min(config.max_parallel_requests, len(to_edit)))
-    if workers <= 1:
-        edited = [_process_page(p) for p in to_edit]
-    elif cache_diff:
+    # Run the edit stage concurrently — pages are independent; run_parallel preserves order.
+    if cache_diff and len(to_edit) > 1:
         # Prime the shared-diff cache on page 1 (serial), then fan out the rest so
         # they read the cache instead of each re-writing the same diff block.
         primed = _process_page(to_edit[0])
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            edited = [primed, *executor.map(_process_page, to_edit[1:])]
+        rest = run_parallel(_process_page, to_edit[1:], config.max_parallel_requests)
+        edited = [primed, *rest]
     else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            edited = list(executor.map(_process_page, to_edit))
+        edited = run_parallel(_process_page, to_edit, config.max_parallel_requests)
 
     capped_outcomes = [
         PageOutcome(

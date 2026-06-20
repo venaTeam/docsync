@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from . import cost
+from . import llm
 from .diffrender import render_diff
 from .models import CodeDiff, EditOp, PageEdit
 
@@ -145,21 +145,15 @@ def critique_page_edit(
 
     user_prompt = build_critique_prompt(diff, page_path, page_edit)
 
-    with cost.stage("critique"):
-        resp = client.messages.parse(
-            model=model or _JUDGE_MODEL,
-            max_tokens=_MAX_TOKENS,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_text,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_prompt}],
-            output_format=CritiqueVerdict,
-        )
-    return resp.parsed_output
+    return llm.parse(
+        client,
+        stage="critique",
+        model=model or _JUDGE_MODEL,
+        max_tokens=_MAX_TOKENS,
+        system=system_text,
+        user=user_prompt,
+        output_format=CritiqueVerdict,
+    )
 
 
 # ---------------------------------------------------------------------------

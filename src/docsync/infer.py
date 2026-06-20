@@ -18,13 +18,12 @@ embedding encoder is injectable too, so the whole path is unit-testable without 
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from fnmatch import fnmatch
 from pathlib import Path
 
-from . import cost
 from . import embeddings as emb
 from . import ingest as ingest_mod
+from . import llm
 from .bootstrap import _existing_page_paths
 from .config import DOCSYNC_DIR, load_manifest, merge_manifest_pages
 from .cost import MeteredClient, UsageMeter
@@ -38,6 +37,7 @@ from .models import (
     ManifestSource,
     RepoDigest,
 )
+from .pool import run_parallel
 from .scaffold import _read_corpus
 from .validate import get_adapter
 
@@ -135,15 +135,15 @@ def judge_page(
 ) -> InferredAnchors:
     """Ask the judge model to confirm/sharpen anchors for one page (structured output)."""
     system, user = build_infer_prompt(page_path, title, summary, body_excerpt, candidates)
-    with cost.stage("infer"):
-        resp = client.messages.parse(
-            model=config.models.judge_model,
-            max_tokens=_INFER_MAX_TOKENS,
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user}],
-            output_format=InferredAnchors,
-        )
-    anchors = resp.parsed_output
+    anchors = llm.parse(
+        client,
+        stage="infer",
+        model=config.models.judge_model,
+        max_tokens=_INFER_MAX_TOKENS,
+        system=system,
+        user=user,
+        output_format=InferredAnchors,
+    )
     anchors.page_path = page_path  # trust our path, not the model's echo
     return anchors
 
@@ -337,12 +337,7 @@ def run_infer(
             confidence=anchors.confidence, status=status, reason=anchors.reason,
         )
 
-    workers = max(1, min(config.max_parallel_requests, len(work)))
-    if workers <= 1:
-        pages = [_infer_one(p) for p in work]
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            pages = list(executor.map(_infer_one, work))
+    pages = run_parallel(_infer_one, work, config.max_parallel_requests)
 
     result.pages = pages
     result.usage = meter.finalize()

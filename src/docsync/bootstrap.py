@@ -21,12 +21,11 @@ from __future__ import annotations
 
 import ast
 import re
-from concurrent.futures import ThreadPoolExecutor
 from fnmatch import fnmatch
 from pathlib import Path
 
-from . import cost
 from . import ingest as ingest_mod
+from . import llm
 from . import polish as polish_mod
 from . import style
 from .config import MANIFEST_FILE, merge_manifest_pages
@@ -43,6 +42,7 @@ from .models import (
     PlannedPage,
     RepoDigest,
 )
+from .pool import run_parallel
 from .validate import get_adapter, validate_new_page
 
 _PLAN_MAX_TOKENS = 6_000
@@ -183,15 +183,16 @@ def plan_docs(
         digests, existing_routes=existing_routes, existing_pages=existing_pages
     )
 
-    with cost.stage("plan"):
-        resp = client.messages.parse(
-            model=config.models.judge_model,
-            max_tokens=_PLAN_MAX_TOKENS,
-            system=[{"type": "text", "text": system}],
-            messages=[{"role": "user", "content": user}],
-            output_format=DocPlan,
-        )
-    raw_plan: DocPlan = resp.parsed_output
+    raw_plan: DocPlan = llm.parse(
+        client,
+        stage="plan",
+        model=config.models.judge_model,
+        max_tokens=_PLAN_MAX_TOKENS,
+        system=system,
+        user=user,
+        output_format=DocPlan,
+        cache_system=False,
+    )
 
     taken_routes = set(existing_routes)
     kept: list[PlannedPage] = []
@@ -430,17 +431,18 @@ def author_page(
     """Generate the full MDX text for one planned page (Opus, structured output)."""
     excerpts = _gather_excerpts(planned, repo_units)
     system, user = build_author_prompt(planned, excerpts)
-    with cost.stage("author"):
-        resp = client.messages.parse(
-            model=config.models.edit_model,
-            max_tokens=_AUTHOR_MAX_TOKENS,
-            thinking={"type": "adaptive"},
-            output_config={"effort": config.models.edit_effort},
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user}],
-            output_format=AuthoredPage,
-        )
-    return resp.parsed_output.content
+    authored: AuthoredPage = llm.parse(
+        client,
+        stage="author",
+        model=config.models.edit_model,
+        max_tokens=_AUTHOR_MAX_TOKENS,
+        system=system,
+        user=user,
+        output_format=AuthoredPage,
+        thinking=True,
+        effort=config.models.edit_effort,
+    )
+    return authored.content
 
 
 # ---------------------------------------------------------------------------
@@ -521,13 +523,7 @@ def run_bootstrap(
         outcome.note = "authored" + (f" · {polish_note}" if polish_note else "")
         return outcome
 
-    pages = plan.pages
-    workers = max(1, min(config.max_parallel_requests, len(pages)))
-    if workers <= 1:
-        outcomes = [_author_one(p) for p in pages]
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            outcomes = list(executor.map(_author_one, pages))
+    outcomes = run_parallel(_author_one, plan.pages, config.max_parallel_requests)
 
     result.outcomes = outcomes
     result.usage = meter.finalize()

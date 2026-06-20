@@ -17,11 +17,11 @@ A hybrid, anchor-first mapper:
 from __future__ import annotations
 
 import fnmatch
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import cost
 from . import embeddings as embeddings_mod
+from . import llm
+from .llm import get_client
 from .models import (
     CandidateSource,
     CodeDiff,
@@ -32,6 +32,7 @@ from .models import (
     Manifest,
     ManifestPage,
 )
+from .pool import run_parallel
 
 # Cap the page text we feed the judge — keeps the prompt cheap and well within Haiku's
 # window while preserving enough of the page to judge relevance.
@@ -270,34 +271,20 @@ def judge_candidates(
     if not candidates:
         return []
 
-    if client is None:
-        import anthropic
-
-        client = anthropic.Anthropic()
+    client = get_client(client)
 
     def _judge_one(candidate: ImpactCandidate) -> JudgeVerdict:
         page_text = _read_page_text(docs_root, candidate.page_path)
         try:
-            with cost.stage("judge"):
-                resp = client.messages.parse(
-                    model=config.models.judge_model,
-                    max_tokens=1024,
-                    system=[
-                        {
-                            "type": "text",
-                            "text": _JUDGE_SYSTEM,
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ],
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": _judge_user_message(diff, candidate, page_text),
-                        }
-                    ],
-                    output_format=JudgeVerdict,
-                )
-            verdict = resp.parsed_output
+            verdict = llm.parse(
+                client,
+                stage="judge",
+                model=config.models.judge_model,
+                max_tokens=1024,
+                system=_JUDGE_SYSTEM,
+                user=_judge_user_message(diff, candidate, page_text),
+                output_format=JudgeVerdict,
+            )
             # The model may omit or echo page_path; pin it to the candidate's.
             verdict.page_path = candidate.page_path
             return verdict
@@ -309,11 +296,7 @@ def judge_candidates(
                 reason=f"judge call failed: {type(exc).__name__}: {exc}",
             )
 
-    workers = max(1, min(config.max_parallel_requests, len(candidates)))
-    if workers == 1:
-        return [_judge_one(c) for c in candidates]
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        return list(executor.map(_judge_one, candidates))
+    return run_parallel(_judge_one, candidates, config.max_parallel_requests)
 
 
 # ---------------------------------------------------------------------------

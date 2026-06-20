@@ -49,10 +49,6 @@ _KNOWN_COMPONENTS = frozenset(
     }
 )
 
-# Opening tag like `<Card ...>` / `<Card>` / `<Card/>`. The capture is the name.
-_OPEN_TAG_RE = re.compile(r"<([A-Z][A-Za-z]*)")
-# Closing tag like `</Card>`.
-_CLOSE_TAG_RE = re.compile(r"</([A-Z][A-Za-z]*)")
 # A code-fence marker is a line whose first non-space content is ``` (3+ backticks).
 _FENCE_RE = re.compile(r"^\s*```", re.MULTILINE)
 # A mermaid fence opener: ```mermaid (optionally with trailing space).
@@ -142,20 +138,25 @@ class MintlifyAdapter(DocAdapter):
           - `fence_count`: number of ``` code-fence markers (must stay even)
           - `mermaid_count`: number of ```mermaid fences
 
+        A self-closing `<Card/>` counts as BOTH an open and a close, so its open/close
+        deltas stay balanced — matching `structural_problems` ("self-closing is balanced
+        by definition"). Counting it as an open-only (the old behaviour) made the additive
+        gate reject a benign self-closing addition as `opens +1, closes +0`.
+
         Flat int values so two signatures compare with a plain `==`.
         """
         signature: dict = {}
 
-        for match in _OPEN_TAG_RE.finditer(text):
-            name = match.group(1)
-            if name in _KNOWN_COMPONENTS:
+        for match in _TAG_RE.finditer(text):
+            closing, name, self_closing = match.group(1), match.group(2), match.group(3)
+            if name not in _KNOWN_COMPONENTS:
+                continue
+            if closing:
+                signature[f"/{name}"] = signature.get(f"/{name}", 0) + 1
+            else:
                 signature[name] = signature.get(name, 0) + 1
-
-        for match in _CLOSE_TAG_RE.finditer(text):
-            name = match.group(1)
-            if name in _KNOWN_COMPONENTS:
-                key = f"/{name}"
-                signature[key] = signature.get(key, 0) + 1
+                if self_closing:
+                    signature[f"/{name}"] = signature.get(f"/{name}", 0) + 1
 
         signature["fence_count"] = len(_FENCE_RE.findall(text))
         signature["mermaid_count"] = len(_MERMAID_RE.findall(text))

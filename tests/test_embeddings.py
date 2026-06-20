@@ -117,6 +117,16 @@ def test_load_returns_none_when_absent(tmp_path: Path):
     assert emb.DocIndex.load(tmp_path / "nope") is None
 
 
+def test_doc_and_code_indices_ignore_each_others_cache(tmp_path: Path):
+    # The two index kinds share file names in a cache dir. Loading the wrong kind must
+    # return None (discriminating-key guard), never raise on the missing rows field.
+    root = _make_docs(tmp_path)
+    cache = tmp_path / "cache"
+    emb.build_index(root, encoder=_fake_encode).save(cache)
+    assert emb.CodeIndex.load(cache) is None  # doc index on disk, asked for code
+    assert emb.DocIndex.load(cache) is not None
+
+
 # --- caching behavior -------------------------------------------------------
 
 

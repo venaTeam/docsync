@@ -93,6 +93,14 @@ def test_structural_signature_ignores_non_components():
     assert sig["fence_count"] == 0
 
 
+def test_structural_signature_counts_self_closing_as_balanced():
+    # `<Card/>` is its own close — it must register an open AND a close so the additive
+    # gate sees balanced growth (regression: it used to count opens +1, closes +0).
+    sig = _adapter().structural_signature("<CardGroup><Card/></CardGroup>")
+    assert sig["Card"] == 1
+    assert sig["/Card"] == 1
+
+
 # ---------------------------------------------------------------------------
 # split_frontmatter
 # ---------------------------------------------------------------------------
@@ -216,6 +224,18 @@ def test_adding_a_whole_container_still_fails():
     result = validate_page(PAGE, original, new, ManifestPage(path=PAGE), _adapter())
     assert not result.passed
     assert any("Steps" in f for f in result.failures)
+
+
+def test_adding_a_self_closing_component_passes():
+    # A new self-closing <Frame/>-style leaf (here <Card/>) is balanced by definition;
+    # the additive gate must not reject it as opens +1, closes +0.
+    original = _page_with_frontmatter("Hello", _BODY)
+    grown = _BODY.replace(
+        "</CardGroup>", '  <Card title="Quick" icon="bolt"/>\n</CardGroup>'
+    )
+    new = _page_with_frontmatter("Hello", grown)
+    result = validate_page(PAGE, original, new, ManifestPage(path=PAGE), _adapter())
+    assert result.passed, result.failures
 
 
 def test_adding_unbalanced_open_tag_fails():
