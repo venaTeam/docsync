@@ -19,12 +19,16 @@ injectable `client` (wrapped in `MeteredClient`), so cost lands on `result.usage
 
 from __future__ import annotations
 
+import ast
+import re
 from concurrent.futures import ThreadPoolExecutor
 from fnmatch import fnmatch
 from pathlib import Path
 
 from . import cost
 from . import ingest as ingest_mod
+from . import polish as polish_mod
+from . import style
 from .config import MANIFEST_FILE, merge_manifest_pages
 from .cost import MeteredClient, UsageMeter
 from .models import (
@@ -235,13 +239,128 @@ def _gather_excerpts(
     return out
 
 
+# --- API-surface extraction (F2): give the author the exact public surface to document,
+# so reference pages are complete and signatures verbatim instead of inferred from prose.
+
+_SURFACE_MAX_PER_FILE = 12
+_SURFACE_MAX_TOTAL = 40
+_SURFACE_DOC_CHARS = 100
+_DEF_RE = re.compile(r"^[ \t]*(?:async +def|def|class) +\w+.*$", re.MULTILINE)
+_ROUTE_RE = re.compile(r"^[ \t]*@\w[\w.]*\.(?:get|post|put|patch|delete|route)\b.*$", re.MULTILINE)
+
+
+def _wanted_symbols(planned: PlannedPage) -> tuple[set[str], list[str]]:
+    """Split a page's anchored symbols into exact names and trailing-`*` prefixes."""
+    exact: set[str] = set()
+    prefixes: list[str] = []
+    for src in planned.sources:
+        for sym in src.symbols:
+            (prefixes.append(sym[:-1]) if sym.endswith("*") else exact.add(sym))
+    return exact, [p for p in prefixes if p]
+
+
+def _is_wanted(name: str, exact: set[str], prefixes: list[str]) -> bool:
+    return name in exact or any(name.startswith(p) for p in prefixes)
+
+
+def _signature(node: ast.AST) -> str:
+    """A one-line signature for a top-level function or class node."""
+    if isinstance(node, ast.ClassDef):
+        bases = ", ".join(ast.unparse(b) for b in node.bases)
+        return f"class {node.name}" + (f"({bases})" if bases else "")
+    prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+    ret = f" -> {ast.unparse(node.returns)}" if node.returns else ""
+    return f"{prefix} {node.name}({ast.unparse(node.args)}){ret}"
+
+
+def _doc_first_line(node: ast.AST) -> str:
+    """The first line of a node's docstring, truncated; '' when undocumented."""
+    doc = (ast.get_docstring(node) or "").strip()
+    if not doc:
+        return ""
+    first = doc.splitlines()[0]
+    return first if len(first) <= _SURFACE_DOC_CHARS else first[: _SURFACE_DOC_CHARS - 1].rstrip() + "…"
+
+
+def _public_methods(node: ast.ClassDef) -> list[str]:
+    return [
+        n.name
+        for n in node.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("_")
+    ]
+
+
+def _surface_regex_fallback(text: str) -> list[str]:
+    """Best-effort surface for a non-parseable/partial excerpt: matched def/route lines."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for hit in (*_DEF_RE.findall(text), *_ROUTE_RE.findall(text)):
+        sig = hit.strip().rstrip(":")
+        if sig and sig not in seen:
+            seen.add(sig)
+            out.append(f"- `{sig}`")
+        if len(out) >= _SURFACE_MAX_PER_FILE:
+            break
+    return out
+
+
+def _surface_for_file(text: str, exact: set[str], prefixes: list[str]) -> list[str]:
+    """Surface lines for one excerpt: anchored symbols first, then other public defs."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return _surface_regex_fallback(text)
+    nodes = [
+        n for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+    wanted = [n for n in nodes if _is_wanted(n.name, exact, prefixes)]
+    public = [n for n in nodes if n not in wanted and not n.name.startswith("_")]
+    lines: list[str] = []
+    for node in (*wanted, *public):
+        if len(lines) >= _SURFACE_MAX_PER_FILE:
+            break
+        doc = _doc_first_line(node)
+        line = f"- `{_signature(node)}`" + (f" — {doc}" if doc else "")
+        if isinstance(node, ast.ClassDef):
+            methods = _public_methods(node)
+            if methods:
+                line += f" · methods: {', '.join(methods[:8])}"
+        lines.append(line)
+    return lines
+
+
+def _extract_api_surface(excerpts: list[tuple[str, str]], planned: PlannedPage) -> str:
+    """A compact, grounded list of the public symbols a page should document.
+
+    For each excerpt file, pull each public (or explicitly-anchored) function/class's
+    signature + first docstring line via a stdlib `ast` parse, falling back to a def/route
+    regex when the excerpt isn't parseable (a truncated file or a non-Python source).
+    Bounded per-file and overall so it can't blow up the prompt. Returns "" when nothing
+    is found — the raw excerpts still carry the ground truth either way.
+    """
+    exact, prefixes = _wanted_symbols(planned)
+    blocks: list[str] = []
+    total = 0
+    for label, text in excerpts:
+        if not text or total >= _SURFACE_MAX_TOTAL:
+            continue
+        file_lines = _surface_for_file(text, exact, prefixes)[: _SURFACE_MAX_TOTAL - total]
+        if not file_lines:
+            continue
+        total += len(file_lines)
+        blocks.append(f"## `{label}`\n" + "\n".join(file_lines))
+    return "\n\n".join(blocks)
+
+
+# Mechanical output contract (the craft rules live in style.py). The grounding rule is
+# omitted here because style.GROUNDING already states it, more fully.
 _BASE_RULES = [
     "Return the ENTIRE file: YAML frontmatter with a non-empty `title` and "
     "`description`, then the MDX body.",
     "Use Mintlify components where they help (<CardGroup>/<Card>, <Steps>/<Step>, "
     "<Note>, <Warning>, <Tabs>/<Tab>); keep every component tag balanced and correctly "
     "nested, and keep code fences balanced.",
-    "Ground every statement in the provided source code — do not invent APIs or behavior.",
     "Do NOT include navigation config; write a self-contained page.",
 ]
 
@@ -260,12 +379,31 @@ _KIND_INTRO = {
 
 
 def build_author_prompt(planned: PlannedPage, excerpts: list[tuple[str, str]]) -> tuple[str, str]:
-    """Return (system, user) for authoring one page, tailored to its kind."""
+    """Return (system, user) for authoring one page, tailored to its kind.
+
+    The system prompt layers the kind-specific role over the shared documentation-craft
+    rules in :mod:`docsync.style` (inverted pyramid, scannability, the per-kind section
+    skeleton, Diátaxis discipline, grounding) plus the mechanical output contract. The
+    user prompt leads with an extracted **API surface** (signatures + one-line docs) so
+    the model documents every public symbol precisely, with the raw excerpts as backup.
+    """
     intro = _KIND_INTRO.get(planned.kind, _KIND_INTRO["reference"])
-    system = "\n".join([intro, *_BASE_RULES])
+    system = "\n".join(
+        [
+            intro,
+            style.INVERTED_PYRAMID,
+            style.SCANNABILITY,
+            style.kind_structure(planned.kind),
+            style.DIATAXIS_DISCIPLINE,
+            style.GROUNDING,
+            *_BASE_RULES,
+        ]
+    )
     code_blocks = "\n\n".join(
         f"## `{label}`\n\n```\n{text}\n```" for label, text in excerpts if text
     ) or "(no source excerpts resolved — write from the title and summary)"
+    surface = _extract_api_surface(excerpts, planned)
+    surface_block = f"# API surface (document every symbol below)\n\n{surface}\n\n" if surface else ""
     symbols = sorted({s for src in planned.sources for s in src.symbols})
     user = (
         f"# Page to write: {planned.page_path}\n\n"
@@ -273,8 +411,11 @@ def build_author_prompt(planned: PlannedPage, excerpts: list[tuple[str, str]]) -
         f"Section: {planned.section}  ·  Kind: {planned.kind}\n"
         f"Intended coverage: {planned.summary or '(use your judgment)'}\n"
         f"Key symbols: {', '.join(symbols) or '(none specified)'}\n\n"
+        f"{surface_block}"
         f"# Source code this page documents\n\n{code_blocks}\n\n"
-        "Write the complete .mdx file now."
+        "Open the body with the lead summary, make the frontmatter `description` a single "
+        "strong sentence (the page's BLUF), and follow the section structure for this "
+        "kind. Write the complete .mdx file now."
     )
     return system, user
 
@@ -359,6 +500,14 @@ def run_bootstrap(
         # </Note>) before the hard gate — recovers pages that cost real Opus spend.
         # The repaired text is what we validate and write, so nothing unsafe ships.
         text = adapter.repair_structure(text)
+        # Opt-in readability pass (fact-frozen). Falls back to `text` on any failure, so a
+        # bad polish never blocks an otherwise-valid authored page.
+        polish_note = ""
+        if config.readability_pass and client is not None:
+            text, polished, polish_note = polish_mod.polish_text(
+                planned.page_path, text, planned.kind, config, adapter,
+                client=client, check_links=check_links, docs_root=docs_root,
+            )
         validation = validate_new_page(
             planned.page_path, text, adapter,
             check_links=check_links, docs_root=docs_root,
@@ -369,7 +518,7 @@ def run_bootstrap(
             return outcome
         outcome.new_content = text
         outcome.applied = True
-        outcome.note = "authored"
+        outcome.note = "authored" + (f" · {polish_note}" if polish_note else "")
         return outcome
 
     pages = plan.pages
