@@ -90,8 +90,10 @@ max_pages_per_run: 0
 ### What each knob controls
 
 <Steps>
-  <Step title="Doc adapter: docs_root">
+  <Step title="Doc adapter: docs_root & adapter">
     Page paths in the manifest resolve relative to `docs_root` under the docs repo. Set it to `"."` when your `.mdx` files sit at the repo root, or to a subdirectory (e.g. `"docs"`) when they are nested.
+
+    The `adapter` key selects the doc-framework adapter that owns the pages (see `docsync.adapters.ADAPTERS`): `"mintlify"` (default — `.mdx` + MDX components, `docs.json` navigation) or `"markdown"` (plain `.md` with YAML frontmatter and no navigation manifest). It drives frontmatter freeze, structural integrity, link checks, and the extension given to new pages. `docsync init --minimal --detect` auto-detects it from the docs config (`docs.json` / `docusaurus.config.js`) or the `.mdx`/`.md` tree and only writes the key when it isn't the default mintlify.
   </Step>
   <Step title="Models & effort">
     `edit_model` drives the page-editing stage, `judge_model` the evaluation stage, and `edit_effort` tunes how hard the editor works. Defaults come from the `ModelConfig` model — leave them unless you have a reason to override.
@@ -104,6 +106,9 @@ max_pages_per_run: 0
   </Step>
   <Step title="PR settings">
     `reviewers` are GitHub handles requested on each opened doc-update PR, and `pr_labels` are applied to those PRs (auto-created in the repo if they don't exist yet).
+  </Step>
+  <Step title="Self-critique">
+    `self_critique` (**on by default**) runs an adversarial judge-model pass after the edit model returns its ops, dropping any op not justified by the diff — it catches non-structural hallucinations the validation gates can't (an invented flag, a described-but-absent change). It adds one cheap judge call per edited page; the CLI `--no-self-critique` flag turns it off and overrides this config value.
   </Step>
 </Steps>
 

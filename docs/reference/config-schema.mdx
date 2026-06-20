@@ -46,6 +46,8 @@ The fields below mirror the starter file emitted by `_config_template()` in `sca
 |-----|------|---------|-------------|
 | `models` | mapping | see [below](#the-models-block) | LLM model + effort selection for the judge and edit stages. |
 | `docs_root` | string | `"."` | Root of the docs tree, relative to the repo, where page paths resolve. |
+| `adapter` | string | `"mintlify"` | Doc-framework adapter that owns the pages — `"mintlify"` (`.mdx` + MDX components, `docs.json` nav) or `"markdown"` (plain `.md`, YAML frontmatter, no nav manifest). Drives frontmatter freeze, structural integrity, link checks, and the new-page extension. |
+| `self_critique` | boolean | `true` | Adversarial self-critique: a judge-model pass drops any edit op not justified by the diff. On by default; the CLI `--no-self-critique` flag turns it off. |
 | `reviewers` | list of strings | `[]` | GitHub handles requested as reviewers on opened doc-update PRs. |
 | `pr_labels` | list of strings | `[docsync]` | Labels applied to opened docs PRs (auto-created in the repo if missing). |
 | `min_edit_confidence` | float (0–1) | `0.0` | Skip the edit stage for pages below this impact confidence. `0` disables the gate. |

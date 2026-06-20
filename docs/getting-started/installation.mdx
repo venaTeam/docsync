@@ -38,7 +38,7 @@ Everything docsync needs lives inside your docs repo under `.docsync/`:
     Install the `docsync` package so the CLI (`docsync ...`) is on your PATH.
   </Card>
   <Card title="A docs repository" icon="book">
-    A repo holding your Mintlify pages (for example, a developer-docs repo) that you'll scaffold `.docsync/` into.
+    A repo holding your docs pages — Mintlify (`.mdx`) or plain Markdown (`.md`) — that you'll scaffold `.docsync/` into. The framework is selected by `config.adapter`.
   </Card>
 </CardGroup>
 
@@ -107,6 +107,7 @@ An LLM backend is only needed later, when you run the full pipeline (`docsync ru
       judge_model: ...
       edit_effort: ...
     docs_root: "."          # root of the docs tree, where page paths resolve
+    adapter: mintlify       # doc framework: "mintlify" (.mdx) or "markdown" (plain .md)
     reviewers: []           # GitHub handles requested on opened doc-update PRs
     pr_labels: [docsync]    # labels applied to opened docs PRs
     min_edit_confidence: 0.0   # skip edits below this impact confidence (0 = off)

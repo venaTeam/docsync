@@ -100,7 +100,7 @@ The anchoring distinction is the engine's core IA idea. Reference pages bind tig
   </Step>
 </Steps>
 
-`plan_docs` returns `(plan, skipped)`, where `skipped` lists the page paths that were dropped for colliding. Normalization helpers keep paths clean throughout: `_normalize_page_path` guarantees a docs-root-relative path with an `.mdx`/`.md` extension and no leading slash, and `_route_of` strips the extension to produce the nav route used for collision checks.
+`plan_docs` returns `(plan, skipped)`, where `skipped` lists the page paths that were dropped for colliding. Normalization helpers keep paths clean throughout: `_normalize_page_path` guarantees a docs-root-relative path with an `.mdx`/`.md` extension and no leading slash — appending the active adapter's `page_extension` (e.g. `.mdx` for Mintlify, `.md` for the plain-Markdown adapter) only when the model omitted one — and `_route_of` strips the extension to produce the nav route used for collision checks.
 
 The output, a `DocPlan`, is the ordered, sectioned set of `PlannedPage`s the authoring stage will turn into MDX — each carrying the section, order, kind, and code anchors decided here.
 

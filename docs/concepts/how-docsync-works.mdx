@@ -210,7 +210,7 @@ The three core phases hand off to three wrap-up steps.
 
 **B4 — Validate.** Authored pages are checked by `validate_new_page`. Because bootstrap pages are brand new, there is no original to diff against, so validation applies *absolute gates* rather than the comparative checks the update pipeline uses.
 
-**B5 — Emit.** `write_bootstrap` writes the page files, emits ordered nav sections (driven by `ordered_sections()` / `SECTION_ORDER`), and records **manifest anchors** so each page is mapped back to the code it documents. The path helpers `_normalize_page_path()` (clean docs-root-relative `.mdx`) and `_route_of()` (the extensionless nav route) keep paths and routes consistent with the adapter's expectations.
+**B5 — Emit.** `write_bootstrap` writes the page files, emits ordered nav sections (driven by `ordered_sections()` / `SECTION_ORDER`), and records **manifest anchors** so each page is mapped back to the code it documents. The path helpers `_normalize_page_path()` (a clean docs-root-relative page path, gaining the active adapter's `page_extension` — `.mdx` for Mintlify, `.md` for plain Markdown — only when the model omitted one) and `_route_of()` (the extensionless nav route) keep paths and routes consistent with the adapter's expectations. The active adapter is resolved via `make_adapter(config.adapter)`, so a non-Mintlify site emits pages without touching a nav manifest.
 
 **B6 — PR.** The CLI wires `pr.open_pr` to open the generated site as a pull request.
 

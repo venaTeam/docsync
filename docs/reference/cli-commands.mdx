@@ -63,7 +63,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
 | `--dry-run` / `--no-dry-run` | `bool` | `True` | Compute + report only; do not write or open a PR. |
 | `--open-pr` / `--no-open-pr` | `bool` | `False` | Branch, commit, push, and open a docs PR. |
 | `--use-embeddings` / `--no-use-embeddings` | `bool` | `True` | Embeddings recall-net: also surface drift on pages the manifest doesn't anchor. Degrades to anchors-only if the embeddings extra isn't installed. |
-| `--check-links` / `--no-check-links` | `bool` | `False` | Run the mintlify broken-link soft gate. |
+| `--check-links` / `--no-check-links` | `bool` | `False` | Run the active adapter's broken-link soft gate (no-op for adapters without a link checker, e.g. plain markdown). |
 | `--self-critique` / `--no-self-critique` | `bool` | `False` | Adversarially re-check each generated edit against the diff (adds a judge-model call per page) and drop edits not justified by the change. |
 | `--polish` / `--no-polish` | `bool` | `None` | Readability pass: after each edit, run a fact-frozen pass that revises the page for a leading summary + scannable structure (adds an edit-model call per page and a larger diff). Overrides `config.readability_pass`. |
 | `--min-confidence` | `float` | `None` | Skip the edit stage for pages below this impact confidence (0–1). Overrides `config.min_edit_confidence`; use for a conservative first rollout. |
