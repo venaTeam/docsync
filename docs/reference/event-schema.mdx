@@ -3,13 +3,18 @@ title: Event Schema and Webhooks
 description: Complete schema, field reference, and examples for the GitHub event payloads docsync ingests, the models they produce, and the functions that parse them into a CodeDiff.
 ---
 
-docsync's CI entry point is **event-native**: instead of requiring the caller to pass `--src-repo/--base/--head/--pr-number/--pr-title` flags, it derives every diff parameter from the GitHub event JSON that GitHub writes to `$GITHUB_EVENT_PATH`. This serves the project's core goal — *triggered by commits, not many parameters*.
+docsync's CI entry point is **event-native**: it derives every diff parameter automatically from the CI environment instead of requiring the caller to pass `--src-repo/--base/--head/--pr-number/--pr-title` flags. This serves the project's core goal — *triggered by commits, not many parameters*.
+
+The parameters come from the GitHub event JSON GitHub writes to `$GITHUB_EVENT_PATH`, or from GitLab's predefined `CI_*` variables (auto-detected via the `GITLAB_CI` env var).
 
 This page documents the event ingestion module (`docsync.events`) and the data contracts it produces (`docsync.models`): the event shapes understood, the functions that parse them, and the schema of every model exchanged across the pipeline.
 
 <CardGroup cols={2}>
   <Card title="Two event shapes" icon="code-branch">
     `repository_dispatch` (explicit `client_payload`) and native `push` (`before`/`after`).
+  </Card>
+  <Card title="GitLab CI support" icon="gitlab">
+    GitLab exposes `CI_*` env vars instead of an event file; `diff_from_ci` auto-detects the platform via `GITLAB_CI`, with `parse_gitlab_env`/`diff_from_gitlab_env` mirroring the GitHub path.
   </Card>
   <Card title="Network-free parsing" icon="plug">
     `parse_event` is pure; `diff_from_event` delegates the actual diffing to `diff_github`, so the module is fully testable.
@@ -25,6 +30,9 @@ This page documents the event ingestion module (`docsync.events`) and the data c
 ## Event ingestion pipeline
 
 <Steps>
+  <Step title="Auto-detect the platform">
+    `diff_from_ci` checks `GITLAB_CI` (GitLab env vars) first, then `$GITHUB_EVENT_PATH` (the GitHub event file).
+  </Step>
   <Step title="Read the event file">
     `load_event($GITHUB_EVENT_PATH)` reads and JSON-parses the triggering event GitHub wrote to disk.
   </Step>
@@ -96,6 +104,22 @@ The native GitHub push event. Selected when the event has both `before` and `aft
 If the event matches neither shape — no `client_payload` and no `before`/`after` keys — `parse_event` raises `ValueError`.
 </Warning>
 
+### GitLab CI (environment variables)
+
+GitLab CI does not write an event JSON file; it exposes [predefined variables](https://docs.gitlab.com/ci/variables/predefined_variables/) instead. `parse_gitlab_env(env)` recovers the same `EventInfo` from them. Merge-request pipelines (`CI_PIPELINE_SOURCE=merge_request_event`) expose the richer `CI_MERGE_REQUEST_*` family, preferred when present.
+
+| Env var | Maps to | Notes |
+|---------|---------|-------|
+| `CI_PROJECT_PATH` | `EventInfo.repo` | `group/name`, matching GitHub's `owner/name` shape |
+| `CI_COMMIT_BEFORE_SHA` | `EventInfo.base_sha` | all-zeros on a branch's first push (null-base fallback) |
+| `CI_COMMIT_SHA` | `EventInfo.head_sha` | the commit tip (ephemeral merge-result commit on MR pipelines) |
+| `CI_MERGE_REQUEST_IID` | `EventInfo.pr_number` | MR pipelines; coerced to `int` |
+| `CI_MERGE_REQUEST_TITLE` | `EventInfo.pr_title` | MR pipelines |
+| `CI_MERGE_REQUEST_DIFF_BASE_SHA` | `EventInfo.base_sha` | MR merge-base; preferred over `CI_COMMIT_BEFORE_SHA` |
+| `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | `EventInfo.head_sha` | real source-tip; preferred over `CI_COMMIT_SHA` |
+
+Raises `ValueError` if neither `CI_PROJECT_PATH` nor the commit SHAs are set.
+
 ## The null SHA
 
 GitHub uses an all-zeros SHA as the "base" of a branch's very first push (there is no prior commit to compare against). It also appears as the base of a `repository_dispatch` payload with no real ancestor.
@@ -112,6 +136,10 @@ When `diff_from_event` detects a null base via `is_null_sha`, it rewrites the ba
 ### `parse_event(event: dict) -> EventInfo`
 
 Extract diff parameters from a GitHub event payload. Pure — performs no I/O. Recognizes `repository_dispatch` then `push` (see [Supported event shapes](#supported-event-shapes)). Raises `ValueError` if neither shape matches.
+
+### `parse_gitlab_env(env: Mapping[str, str]) -> EventInfo`
+
+Extract diff parameters from GitLab CI environment variables (pure; no I/O). See [GitLab CI (environment variables)](#gitlab-ci-environment-variables) for the variable mapping. Prefers the `CI_MERGE_REQUEST_*` family on merge-request pipelines. Raises `ValueError` if neither `CI_PROJECT_PATH` nor the commit SHAs are set.
 
 ### `load_event(event_path: str | Path) -> dict`
 
@@ -163,9 +191,17 @@ diff_fn(
   </Tab>
 </Tabs>
 
+### `diff_from_gitlab_env(env=None, *, runner=None) -> CodeDiff`
+
+The GitLab analogue of `diff_from_event`: there is no event file, so the parameters come from the predefined `CI_*` variables via `parse_gitlab_env`. `env` defaults to `os.environ` when `None`; the same null-base fallback applies (GitLab sets `CI_COMMIT_BEFORE_SHA` to all-zeros on a branch's first push). `runner` mirrors `diff_from_event`.
+
+### `diff_from_ci(env=None, *, runner=None) -> CodeDiff`
+
+Auto-detect the CI platform and build a `CodeDiff`. Detection order: `GITLAB_CI` set → `diff_from_gitlab_env`; else `GITHUB_EVENT_PATH` set → `diff_from_event`. `env` defaults to `os.environ`. Raises `ValueError` if neither platform is detected. GitHub behavior is unchanged — when `GITLAB_CI` is absent this falls through to the existing GitHub event-file path.
+
 ## `EventInfo`
 
-The diff parameters recovered from a GitHub event, **before** the null-base fixup. A `@dataclass`.
+The diff parameters recovered from a CI event (GitHub or GitLab), **before** the null-base fixup. A `@dataclass`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

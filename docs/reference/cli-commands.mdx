@@ -57,7 +57,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
 | `--src-repo` | `str` | `None` | Service repo: a local path or a GitHub `owner/name`. Omit when using `--from-event`. |
 | `--base` | `str` | `None` | Base ref/sha (before). Omit with `--from-event`. With an explicit `--src-repo` + `--head` but no `--base`, docsync falls back to the stored cursor (last synced head) for that repo. |
 | `--head` | `str` | `None` | Head ref/sha (after). Omit with `--from-event`. |
-| `--from-event` | `Path` | `None` | GitHub event JSON (the CI `$GITHUB_EVENT_PATH`): derive repo/base/head/PR automatically. Auto-detected from `$GITHUB_EVENT_PATH` when no flags are given. |
+| `--from-event` | `Path` | `None` | GitHub event JSON (the CI `$GITHUB_EVENT_PATH`): derive repo/base/head/PR automatically. When no flags are given, the CI platform is auto-detected — GitLab via `$GITLAB_CI` (the `CI_*` env vars) or GitHub via `$GITHUB_EVENT_PATH`. |
 | `--pr-number` | `int` | `None` | PR number associated with the change. |
 | `--pr-title` | `str` | `None` | PR title associated with the change. |
 | `--dry-run` / `--no-dry-run` | `bool` | `True` | Compute + report only; do not write or open a PR. |
@@ -81,8 +81,8 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
   <Step title="Explicit --from-event">
     If `--from-event` is passed, the diff is derived from that GitHub event JSON.
   </Step>
-  <Step title="Auto-detected $GITHUB_EVENT_PATH">
-    When no explicit `--src-repo`/`--base`/`--head` flags are given, docsync falls back to the `GITHUB_EVENT_PATH` environment variable — the typical CI path, where no flags are needed.
+  <Step title="CI auto-detect (GitLab or GitHub)">
+    When no explicit `--src-repo`/`--base`/`--head` flags are given, docsync auto-detects the CI platform — the typical CI path, where no flags are needed. GitLab is detected via the `GITLAB_CI` env var (repo/base/head/PR come from the predefined `CI_*` variables); otherwise docsync falls back to the GitHub event JSON at `GITHUB_EVENT_PATH`.
   </Step>
   <Step title="Explicit flags">
     Otherwise, `--src-repo` and `--head` must be provided. `--base` may be omitted, in which case docsync resolves it from the stored cursor (the last head it synced for that repo); the first run for a repo must pass `--base` explicitly. `--src-repo` is treated as a local checkout when the path exists and contains a `.git` directory; otherwise it is treated as a GitHub `owner/name`.
@@ -92,7 +92,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
 <Warning>
 If none of those conditions are met, the command raises a `BadParameter` error:
 
-> provide `--from-event` (or run in CI with `$GITHUB_EVENT_PATH` set), or all of `--src-repo` / `--base` / `--head`.
+> provide `--from-event` (or run in CI with `$GITLAB_CI` / `$GITHUB_EVENT_PATH` set), or all of `--src-repo` / `--base` / `--head`.
 </Warning>
 
 ### Execution flow
@@ -220,6 +220,7 @@ Pass `--min-recall` and/or `--min-precision` to turn the score into a CI regress
 | Variable | Used by | Purpose |
 |----------|---------|---------|
 | `GITHUB_EVENT_PATH` | `run` | CI-provided path to the GitHub event JSON; auto-detected to derive repo/base/head/PR when no diff flags are passed. |
+| `GITLAB_CI` | `run` | Signals a GitLab CI environment; when set (and no diff flags are passed), repo/base/head/PR are derived from the predefined `CI_*` variables (`CI_PROJECT_PATH`, `CI_COMMIT_BEFORE_SHA`, `CI_COMMIT_SHA`, and the `CI_MERGE_REQUEST_*` family). |
 | `ANTHROPIC_API_KEY` | `run` (`--backend api`) | API key for the default `api` LLM backend. |
 
 <Note>

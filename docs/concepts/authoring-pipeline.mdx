@@ -44,7 +44,7 @@ flowchart TD
 
 ## Stage 4 — generating surgical edits
 
-The contract for an edit is deliberately small. The model never returns a rewritten file; it returns a `PageEdit`, which wraps a list of find/replace `EditOp`s. `generate_page_edit` is the only place in this module that talks to the Anthropic SDK for edit generation, and it is injectable with a fake `client` for tests (defaulting to `anthropic.Anthropic()`).
+The contract for an edit is deliberately small. The model never returns a rewritten file; it returns a `PageEdit`, which wraps a list of find/replace `EditOp`s. `generate_page_edit` is the only place in this module that talks to the Anthropic SDK for edit generation, and it is injectable with a fake `client` for tests (defaulting to `anthropic.Anthropic()`). It also accepts an optional `retry_hint`, which `build_edit_prompt` appends to the user message — the pipeline uses this to regenerate an op after a non-unique `find` was rejected.
 
 The system prompt encodes the rules that keep edits surgical:
 
@@ -140,7 +140,7 @@ The rules are absolute:
 Ops are applied sequentially against the evolving text, so a later op sees the result of earlier ones. An empty edit list returns the text unchanged.
 
 <Warning>
-Because matching is exact and unique, an op whose `find` isn't a verbatim, one-of-a-kind substring of the *current* working text fails hard. In the pipeline this isn't fatal to the run — the failure is caught and the page is simply dropped with an `"edit not applicable (dropped)"` note — but it means a sloppy `find` costs you the whole page rather than producing a subtly wrong edit.
+Because matching is exact and unique, an op whose `find` isn't a verbatim, one-of-a-kind substring of the *current* working text fails hard. `EditApplicationError` carries an `ambiguous` flag that distinguishes the two failure modes: a `find` that matched **zero** times (`ambiguous=False` — not found, unfixable by re-prompting) versus one that matched **more than once** (`ambiguous=True` — non-unique, fixable by regenerating the op with more surrounding context). In the pipeline neither is fatal to the run: a not-found failure drops the page with an `"edit not applicable (dropped)"` note, while a non-unique failure earns one bounded retry — the editor is re-asked for the same edit with the `NON_UNIQUE_RETRY_HINT` appended, requesting a longer, anchored `find`. If the retry still can't apply, the page drops too.
 </Warning>
 
 ## Putting it together: one page's outcome
@@ -160,7 +160,7 @@ Each page is then processed by `_process_page`, which is written to be **pure wi
     If `self_critique` is on, `critique_page_edit` then `apply_critique` drop unfaithful ops. If nothing survives, the page is `dropped by self-critique`. A critique exception is swallowed — the original edit is kept.
   </Step>
   <Step title="Apply">
-    `apply_edits` performs the strict str-replace. An `EditApplicationError` drops the page with an explanatory note.
+    `apply_edits` performs the strict str-replace. A non-unique (`ambiguous`) `EditApplicationError` triggers a single bounded retry that re-asks `generate_page_edit` with the `NON_UNIQUE_RETRY_HINT` for a longer, unique `find`; a not-found failure (or a still-failing retry) drops the page with an explanatory note.
   </Step>
   <Step title="Validate (Stage 5)">
     `validate_page` (via the format-specific adapter from `get_adapter`) checks the result. If it fails, the page is `dropped by validation` with the joined failures.
