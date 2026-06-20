@@ -51,6 +51,7 @@ def validate_page(
     *,
     check_links: bool = False,
     docs_root: Path | None = None,
+    thoroughness: str = "medium",
 ) -> ValidationResult:
     """Run all gates comparing `original_text` -> `new_text`.
 
@@ -72,7 +73,7 @@ def validate_page(
     failures.extend(_check_frontmatter(original_text, new_text, manifest_page, adapter))
     failures.extend(_check_structure(original_text, new_text, adapter))
     failures.extend(_check_wellformed(new_text, adapter))
-    failures.extend(_check_diff_size(original_text, new_text, manifest_page))
+    failures.extend(_check_diff_size(original_text, new_text, manifest_page, thoroughness))
     failures.extend(_check_not_truncated(original_text, new_text))
 
     if check_links and docs_root is not None:
@@ -318,14 +319,40 @@ def _net_changed_lines(original_text: str, new_text: str) -> int:
     return changed
 
 
+# Default diff-size budget (net changed lines, fraction of page) per thoroughness level.
+# medium == the ManifestPage field defaults, so a medium run is byte-for-byte the prior
+# behavior; light tightens edits, high loosens them.
+_MODEL_DEFAULT_LINES = 60
+_MODEL_DEFAULT_PCT = 0.5
+_DIFF_BUDGET: dict[str, tuple[int, float]] = {
+    "light": (40, 0.35),
+    "medium": (_MODEL_DEFAULT_LINES, _MODEL_DEFAULT_PCT),
+    "high": (100, 0.7),
+}
+
+
 def _check_diff_size(
     original_text: str,
     new_text: str,
     manifest_page: ManifestPage | None,
+    thoroughness: str = "medium",
 ) -> list[str]:
-    # Fall back to model defaults when no manifest entry was supplied.
-    max_diff_lines = manifest_page.max_diff_lines if manifest_page else 60
-    max_diff_pct = manifest_page.max_diff_pct if manifest_page else 0.5
+    # Thoroughness sets the fallback budget; an explicit per-page override (a value that
+    # differs from the model default) always wins over it.
+    base_lines, base_pct = _DIFF_BUDGET.get(thoroughness, _DIFF_BUDGET["medium"])
+    if manifest_page is not None:
+        max_diff_lines = (
+            manifest_page.max_diff_lines
+            if manifest_page.max_diff_lines != _MODEL_DEFAULT_LINES
+            else base_lines
+        )
+        max_diff_pct = (
+            manifest_page.max_diff_pct
+            if manifest_page.max_diff_pct != _MODEL_DEFAULT_PCT
+            else base_pct
+        )
+    else:
+        max_diff_lines, max_diff_pct = base_lines, base_pct
 
     original_line_count = len(original_text.splitlines())
     budget = max(max_diff_lines, ceil(max_diff_pct * original_line_count))

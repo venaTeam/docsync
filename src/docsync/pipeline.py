@@ -188,6 +188,7 @@ def run(
             validation = validate_page(
                 page.page_path, original, new_text, manifest_page, adapter,
                 check_links=check_links, docs_root=docs_root,
+                thoroughness=config.thoroughness_for(),
             )
             outcome.validation = validation
             if not validation.passed:

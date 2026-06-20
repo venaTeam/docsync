@@ -50,6 +50,18 @@ Requires Python ≥ 3.11, `git`, and `gh` (for the cross-repo path). Set
 
 ## Use it (CLI — the Phase-0 dogfood)
 
+Start in the docs repo — `init` scaffolds `.docsync/`, auto-detecting `docs_root`, the
+adapter, and the repo topology (mono/single/poly):
+
+```bash
+# 1. Scaffold + auto-detect (run inside the docs repo):
+poetry run docsync init --minimal          # or: --infer --src-repo name=path
+poetry run docsync explain                  # every config field, its default + meaning
+poetry run docsync doctor                   # check the manifest resolves to real code
+```
+
+Then the live loop:
+
 ```bash
 # Inspect which pages a merge would touch (cheap, no LLM):
 poetry run docsync map \
@@ -72,17 +84,21 @@ poetry run docsync run ... --no-dry-run --open-pr
 
 ## Configure a docs repo
 
-docsync reads `<docs-repo>/.docsync/`:
+`docsync init` scaffolds this; `docsync explain` documents every field. docsync reads
+`<docs-repo>/.docsync/`:
 
 ```
 .docsync/
-  config.yml          # models, thresholds, reviewers
+  config.yml          # models, thresholds, repo_mode, thoroughness, reviewers
   manifest.yml        # page ↔ source mapping — the heart of impact mapping
   state/cursors.json  # last processed head_sha per repo (idempotency; committed)
 ```
 
+Config is all-optional with sane defaults (`repo_mode: auto`, `thoroughness: medium`);
+run `docsync explain` for the full schema, or `docsync explain manifest` for the manifest.
 A ready-made manifest for Keep is in [`examples/keep/`](examples/keep/) — copy it
-into `keep-developer-docs/.docsync/`. Manifest shape:
+into `keep-developer-docs/.docsync/`. Manifest shape (`repo:` is optional in a
+single-/mono-repo setup):
 
 ```yaml
 pages:

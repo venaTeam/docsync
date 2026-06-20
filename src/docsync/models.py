@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def _dedupe_preserving_order(items: Iterable[str]) -> list[str]:
@@ -204,23 +204,46 @@ class AuthoredPage(BaseModel):
 class ManifestSource(BaseModel):
     """One source-of-truth location a doc page is anchored to."""
 
-    repo: str  # matches CodeDiff.repo
-    globs: list[str] = Field(default_factory=list)  # fnmatch globs over changed paths
-    symbols: list[str] = Field(default_factory=list)  # symbol names (supports trailing *)
+    repo: str = Field(
+        default="",
+        description=(
+            "Source repo this anchor belongs to (matches CodeDiff.repo). Empty = the "
+            "only/local repo: matches any diff, so mono/single manifests can omit it. "
+            "Poly manifests set it explicitly to scope each anchor to one repo."
+        ),
+    )
+    globs: list[str] = Field(
+        default_factory=list, description="fnmatch globs over changed file paths."
+    )
+    symbols: list[str] = Field(
+        default_factory=list, description="Symbol names to match (trailing * = prefix)."
+    )
 
 
 class ManifestPage(BaseModel):
     """A documentation page and the code it is anchored to."""
 
-    path: str  # path to the .mdx, relative to the docs repo root
-    sources: list[ManifestSource] = Field(default_factory=list)
-    max_diff_lines: int = 60  # diff-size guardrail (net changed lines per page)
-    max_diff_pct: float = 0.5  # ...or this fraction of the page, whichever is larger
-    allow_frontmatter_edit: bool = False
-    # When True, an anchor hit does NOT autopass — the page is routed through the judge
-    # so an edit fires only on a confirmed invalidation. Set for narrative (concept/
-    # guide) pages whose broad subsystem anchors would otherwise over-trigger.
-    judge_required: bool = False
+    path: str = Field(description="Path to the .mdx, relative to the docs repo root.")
+    sources: list[ManifestSource] = Field(
+        default_factory=list, description="Source anchors that keep this page live."
+    )
+    max_diff_lines: int = Field(
+        default=60, description="Diff-size guardrail: net changed lines allowed per page."
+    )
+    max_diff_pct: float = Field(
+        default=0.5, description="...or this fraction of the page, whichever is larger."
+    )
+    allow_frontmatter_edit: bool = Field(
+        default=False, description="Allow edits to the page's frontmatter title/description."
+    )
+    judge_required: bool = Field(
+        default=False,
+        description=(
+            "When True, an anchor hit does NOT autopass — the page is routed through the "
+            "judge so an edit fires only on a confirmed invalidation. Set for narrative "
+            "(concept/guide) pages whose broad anchors would otherwise over-trigger."
+        ),
+    )
 
 
 class Manifest(BaseModel):
@@ -231,71 +254,152 @@ class Manifest(BaseModel):
 
 
 class ModelConfig(BaseModel):
-    edit_model: str = "claude-opus-4-8"
-    judge_model: str = "claude-haiku-4-5"
-    edit_effort: str = "high"
+    edit_model: str = Field(
+        default="claude-opus-4-8", description="Model for authoring + surgical edits (Opus)."
+    )
+    judge_model: str = Field(
+        default="claude-haiku-4-5",
+        description="Model for the relevance judge, self-critique, and infer (Haiku).",
+    )
+    edit_effort: str = Field(
+        default="high", description="Opus reasoning effort for author + edit calls."
+    )
 
 
 class DocsyncConfig(BaseModel):
-    """Loaded from <docs-repo>/.docsync/config.yml (all fields optional)."""
+    """Loaded from <docs-repo>/.docsync/config.yml (all fields optional).
 
-    models: ModelConfig = Field(default_factory=ModelConfig)
-    docs_root: str = "."  # root of the docs tree, relative to the docs repo
-    # Doc-framework adapter that owns the pages (see docsync.adapters.ADAPTERS):
-    # "mintlify" (.mdx + MDX components, docs.json nav) or "markdown" (plain .md,
-    # YAML frontmatter, no nav manifest). Drives frontmatter freeze, structural
-    # integrity, link checks, and the new-page extension.
-    adapter: str = "mintlify"
-    # Extra directory names to prune during ingest, on top of ingest.DEFAULT_EXCLUDE_DIRS.
-    # Use this to skip repo-specific noise that isn't the product surface you document
-    # (e.g. "examples", "deploy", "docs", a generated site dir) so it doesn't inflate
-    # the plan or token cost. Matched by directory *name* anywhere in the tree.
-    ingest_exclude_dirs: list[str] = Field(default_factory=list)
-    # When the judge's confidence is >= this, an embedding/judge candidate is kept.
-    judge_confidence_threshold: float = 0.5
-    # Anchor hits at or above this judge confidence skip the judge entirely.
-    anchor_autopass: bool = True
-    reviewers: list[str] = Field(default_factory=list)
-    # --- ship-safety dial ---
-    # Skip the (expensive) edit stage for any page whose impact confidence is below
-    # this. 0.0 = off (anchor autopass is always 1.0, so this only gates judge/
-    # embedding pages). Raise it for a conservative first rollout on a real repo.
-    min_edit_confidence: float = 0.0
-    # Labels applied to opened docs PRs (auto-created in the docs repo if missing).
-    pr_labels: list[str] = Field(default_factory=lambda: ["docsync"])
-    # Max concurrent LLM requests for the judge + edit stages (a real PR touches
-    # several pages; they're independent). Kept low to respect fresh-org rate limits.
-    max_parallel_requests: int = 4
-    # Hard cap on pages sent to the (expensive) edit stage per run; 0 = unlimited.
-    # Highest-confidence pages are edited first; the rest are reported, not edited.
-    max_pages_per_run: int = 0
-    # Opt-in readability pass: after a page is authored/edited, run one more (fact-frozen)
-    # LLM pass that revises it for a leading summary + scannable structure. Off by default
-    # — adds an edit-model call per produced page; the CLI `--polish` flag toggles it.
-    readability_pass: bool = False
-    # Adversarial self-critique: after the edit model returns ops, a judge-model pass
-    # drops any op not justified by the diff (catches non-structural hallucinations the
-    # validation gates can't — an invented flag, a described-but-absent change). ON by
-    # default: it's one cheap judge call per edited page and the safety is worth it; the
-    # CLI `--no-self-critique` flag turns it off. Dropped ops surface in the dashboard's
-    # edit-drop-rate, so over-aggressive critique is observable.
-    self_critique: bool = True
-    # Identifier tokens that name source concepts but are too generic to embed well;
-    # excluded from the embedding query (e.g. "self", "config", "value").
-    stopword_symbols: list[str] = Field(default_factory=list)
-    # --- embeddings recall-net (optional; needs the `embeddings` extra) ---
-    # sentence-transformers model id used to embed doc chunks + the diff query.
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    # Minimum cosine similarity for an embedding candidate to be worth a judge call.
-    embedding_floor: float = 0.2
-    # Max embedding candidates surfaced per diff (before the judge filters them).
-    embedding_top_k: int = 5
-    # --- cost management (dashboard) ---
-    # Soft monthly spend target in USD. When set, `docsync dashboard` shows current-
-    # month spend, a projected month-end figure, and an over-budget warning banner.
-    # None = no budget tracking (the dashboard still shows raw cost). Advisory only —
-    # docsync never blocks a run on it.
-    monthly_budget_usd: Optional[float] = None
+    Unknown keys are rejected (a typo'd field is an error, not silently ignored). Run
+    `docsync explain` to see every field, its type, default, and meaning.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    models: ModelConfig = Field(
+        default_factory=ModelConfig, description="LLM model choices (see ModelConfig)."
+    )
+    docs_root: str = Field(
+        default=".", description="Root of the docs tree, relative to the docs repo."
+    )
+    repo_mode: Literal["auto", "mono", "single", "poly"] = Field(
+        default="auto",
+        description=(
+            "Repository topology. mono = docs+code in one checkout (the docs subtree is "
+            "filtered out of the diff). single = one code repo + a separate docs repo. "
+            "poly = many code repos + one docs repo (run once per repo). auto = detect "
+            "from the checkout + manifest."
+        ),
+    )
+    adapter: str = Field(
+        default="mintlify",
+        description=(
+            "Doc-framework adapter that owns the pages: 'mintlify' (.mdx + docs.json nav) "
+            "or 'markdown' (plain .md). Drives frontmatter freeze, structural integrity, "
+            "link checks, and the new-page extension."
+        ),
+    )
+    thoroughness: Literal["light", "medium", "high"] = Field(
+        default="medium",
+        description=(
+            "Generation thoroughness — how much content to write. light = only the most "
+            "important surface (short pages, tighter edits); medium = balanced; high = "
+            "exhaustive (every symbol/option/edge case, looser edits)."
+        ),
+    )
+    thoroughness_by_kind: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-page-kind overrides for `thoroughness`, keyed by PageKind (reference | "
+            "concept | guide). Applies where a kind is known (bootstrap authoring)."
+        ),
+    )
+    ingest_exclude_dirs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra directory names to prune during ingest (on top of the built-in set), "
+            "matched by name anywhere in the tree. Use to skip non-product noise."
+        ),
+    )
+    judge_confidence_threshold: float = Field(
+        default=0.5,
+        description="Min judge confidence to keep an embedding/judge candidate.",
+    )
+    anchor_autopass: bool = Field(
+        default=True, description="Anchor hits skip the judge entirely."
+    )
+    reviewers: list[str] = Field(
+        default_factory=list, description="GitHub handles requested as reviewers on docs PRs."
+    )
+    min_edit_confidence: float = Field(
+        default=0.0,
+        description=(
+            "Ship-safety dial: skip the edit stage for pages below this impact confidence. "
+            "0 = off. Raise it for a conservative first rollout on a real repo."
+        ),
+    )
+    pr_labels: list[str] = Field(
+        default_factory=lambda: ["docsync"],
+        description="Labels applied to opened docs PRs (auto-created in the docs repo).",
+    )
+    max_parallel_requests: int = Field(
+        default=4, description="Max concurrent LLM requests across the judge + edit stages."
+    )
+    max_pages_per_run: int = Field(
+        default=0,
+        description=(
+            "Hard cap on pages sent to the edit stage per run; 0 = unlimited. "
+            "Highest-confidence pages are edited first; the rest are reported, not edited."
+        ),
+    )
+    readability_pass: bool = Field(
+        default=False,
+        description=(
+            "Opt-in fact-frozen readability pass after each authored/edited page (one extra "
+            "edit-model call per page). The CLI --polish flag toggles it."
+        ),
+    )
+    self_critique: bool = Field(
+        default=True,
+        description=(
+            "Adversarial pass that drops edit ops not justified by the diff (one cheap judge "
+            "call per edited page). ON by default; the CLI --no-self-critique disables it."
+        ),
+    )
+    stopword_symbols: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Generic identifier tokens excluded from the embedding query (e.g. 'self', "
+            "'config', 'value')."
+        ),
+    )
+    embedding_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        description="sentence-transformers model id for the embeddings recall-net.",
+    )
+    embedding_floor: float = Field(
+        default=0.2,
+        description="Min cosine similarity for an embedding candidate to warrant a judge call.",
+    )
+    embedding_top_k: int = Field(
+        default=5, description="Max embedding candidates surfaced per diff before judging."
+    )
+    monthly_budget_usd: Optional[float] = Field(
+        default=None,
+        description=(
+            "Soft monthly spend target (USD) shown on the dashboard. Advisory only — never "
+            "blocks a run. None = no budget tracking."
+        ),
+    )
+
+    def thoroughness_for(self, kind: str | None = None) -> str:
+        """Effective thoroughness level for a page *kind* (falls back to the global level).
+
+        Pass a PageKind to honor a `thoroughness_by_kind` override; pass nothing (the run
+        edit flow, which has no per-page kind) to get the global `thoroughness`.
+        """
+        if kind:
+            return self.thoroughness_by_kind.get(kind, self.thoroughness)
+        return self.thoroughness
 
 
 # ---------------------------------------------------------------------------

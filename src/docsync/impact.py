@@ -75,7 +75,38 @@ def _repo_key(repo: str) -> str:
 
 
 def _repo_matches(source_repo: str, diff_repo: str) -> bool:
+    # An empty source repo is a wildcard ("the only/local repo"): it matches any diff,
+    # so mono- and single-repo manifests need not repeat a repo on every anchor.
+    if not source_repo:
+        return True
     return _repo_key(source_repo) == _repo_key(diff_repo)
+
+
+def filter_docs_paths(diff: CodeDiff, docs_root: str) -> CodeDiff:
+    """Drop files under *docs_root* from *diff* (for mono-repo runs).
+
+    In a mono repo the source diff also carries the docs subtree; left in, a merged
+    doc change would map onto itself and spuriously drive further doc edits. Comparing
+    against ``docs_root`` removes those files (by ``path`` and any ``previous_path``)
+    so only real code changes reach impact mapping. A ``docs_root`` of ``"."`` (docs at
+    the repo root) is a no-op — there is no code subtree to separate.
+    """
+    root = docs_root.strip("/")
+    if not root or root == ".":
+        return diff
+
+    prefix = root + "/"
+
+    def _under_docs(path: str | None) -> bool:
+        return bool(path) and (path == root or path.startswith(prefix))
+
+    kept = [
+        f for f in diff.files
+        if not (_under_docs(f.path) or _under_docs(f.previous_path))
+    ]
+    if len(kept) == len(diff.files):
+        return diff
+    return diff.model_copy(update={"files": kept})
 
 
 def find_anchor_candidates(diff: CodeDiff, manifest: Manifest) -> list[ImpactCandidate]:

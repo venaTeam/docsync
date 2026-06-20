@@ -141,6 +141,38 @@ def detect_adapter(docs_repo: Path, docs_root: str) -> str:
     return ""
 
 
+# Source-code file extensions used to tell a mono repo (docs + code together) from a
+# standalone docs repo. Deliberately broad; presence of any outside docs_root ⇒ mono.
+_CODE_EXTS = frozenset(
+    (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java",
+     ".rb", ".php", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".kt", ".swift")
+)
+_CODE_SKIP_DIRS = frozenset(
+    (".docsync", ".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__")
+)
+
+
+def detect_repo_mode(docs_repo: Path, docs_root: str) -> str:
+    """Guess the repo topology: ``"mono"`` if code lives alongside the docs, else ``"single"``.
+
+    Mono = the docs repo also holds source code *outside* ``docs_root`` (docsync's own
+    layout: ``docs/`` + ``src/``). A standalone docs repo with no such code reads as
+    ``single``. Poly can't be inferred from a single checkout, so it's never guessed here;
+    ``config.resolve_repo_mode`` still detects it at run time from a multi-repo manifest.
+    """
+    docs_repo = Path(docs_repo)
+    docs_subtree = (docs_repo / docs_root).resolve() if docs_root not in ("", ".") else None
+    for path in docs_repo.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in _CODE_EXTS:
+            continue
+        if _CODE_SKIP_DIRS.intersection(path.parts):
+            continue
+        if docs_subtree and docs_subtree in path.resolve().parents:
+            continue  # inside the docs tree — not the code surface
+        return "mono"
+    return "single"
+
+
 def _manifest_template() -> str:
     """A commented starter manifest with one illustrative page entry.
 

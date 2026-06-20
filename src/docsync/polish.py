@@ -86,11 +86,15 @@ def polish_page(page_path: str, page_text: str, kind: str, config: DocsyncConfig
     `PageEdit` output) and meters under the `"polish"` stage. Injectable `client` for tests.
     """
     system, user = build_polish_prompt(page_path, page_text, kind)
+    # Polish is fact-frozen (it can only restructure, never add), so it takes no
+    # thoroughness *directive* — but a higher level means longer pages, so scale the
+    # token budget by the per-kind level to leave room to restructure them.
+    max_tokens = style.tokens_for(config.thoroughness_for(kind), _MAX_TOKENS)
     return llm.parse(
         client,
         stage="polish",
         model=config.models.edit_model,
-        max_tokens=_MAX_TOKENS,
+        max_tokens=max_tokens,
         system=system,
         user=user,
         output_format=PageEdit,

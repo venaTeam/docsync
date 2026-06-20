@@ -12,6 +12,7 @@ This module is the only place that talks to the Anthropic SDK for edit generatio
 from __future__ import annotations
 
 from . import llm
+from . import style
 from .diffrender import render_diff
 from .llm import get_client
 from .models import (
@@ -116,11 +117,12 @@ def apply_edits(text: str, edit: PageEdit) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_system_prompt(allow_frontmatter_edit: bool) -> str:
+def _build_system_prompt(allow_frontmatter_edit: bool, thoroughness: str = "medium") -> str:
     lines = [
         "You update an existing MDX documentation page to reflect a code change. "
         "You return a list of find/replace edit operations — you NEVER rewrite the "
         "whole file.",
+        style.thoroughness_directive(thoroughness),
         "Each `find` must be a VERBATIM, UNIQUE substring of the current page (copy "
         "it exactly, including whitespace). Make `find` long enough to be unique but "
         "as small as possible — ideally a single table row, sentence, or code-fence "
@@ -172,6 +174,7 @@ def build_edit_prompt(
     rendered_diff: str | None = None,
     include_diff: bool = True,
     retry_hint: str | None = None,
+    thoroughness: str = "medium",
 ) -> tuple[str, str]:
     """Return `(system_prompt, user_prompt)`.
 
@@ -185,7 +188,7 @@ def build_edit_prompt(
     allow_frontmatter_edit = bool(
         manifest_page is not None and manifest_page.allow_frontmatter_edit
     )
-    system_prompt = _build_system_prompt(allow_frontmatter_edit)
+    system_prompt = _build_system_prompt(allow_frontmatter_edit, thoroughness)
     rendered = (
         rendered_diff if rendered_diff is not None
         else render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)
@@ -249,10 +252,14 @@ def generate_page_edit(
     """
     client = get_client(client)
 
+    # The edit flow has no per-page kind, so thoroughness is the global level (which
+    # also keeps the cached system prompt byte-identical across every page in the run).
+    thoroughness = config.thoroughness_for()
     rendered = render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)
     system_prompt, user_prompt = build_edit_prompt(
         page_path, page_text, diff, impacted, manifest_page,
         rendered_diff=rendered, include_diff=not cache_diff, retry_hint=retry_hint,
+        thoroughness=thoroughness,
     )
 
     system_blocks: list[dict] = [
@@ -274,7 +281,7 @@ def generate_page_edit(
         client,
         stage="edit",
         model=config.models.edit_model,
-        max_tokens=_MAX_TOKENS,
+        max_tokens=style.tokens_for(thoroughness, _MAX_TOKENS),
         system=system_blocks,
         user=user_prompt,
         output_format=PageEdit,

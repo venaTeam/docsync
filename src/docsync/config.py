@@ -14,6 +14,7 @@ import io
 import json
 from pathlib import Path
 
+from pydantic import ValidationError
 from ruamel.yaml import YAML
 
 from .models import DocsyncConfig, Manifest, ManifestPage
@@ -38,12 +39,36 @@ def docsync_dir(docs_repo: Path) -> Path:
 
 
 def load_config(docs_repo: Path) -> DocsyncConfig:
-    """Load .docsync/config.yml; return defaults if it's absent."""
+    """Load .docsync/config.yml; return defaults if it's absent.
+
+    Raises :class:`ConfigError` (with the offending field) on an unknown key or a
+    bad value, rather than leaking a raw Pydantic traceback — a typo'd field is a
+    mistake worth surfacing, not silently ignoring.
+    """
     path = docsync_dir(docs_repo) / CONFIG_FILE
     if not path.exists():
         return DocsyncConfig()
     data = _yaml.load(path.read_text()) or {}
-    return DocsyncConfig.model_validate(data)
+    try:
+        return DocsyncConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(_format_config_error(path, exc)) from exc
+
+
+class ConfigError(ValueError):
+    """A `.docsync/config.yml` that doesn't validate (unknown key or bad value)."""
+
+
+def _format_config_error(path: Path, exc: ValidationError) -> str:
+    """A friendly, `.docsync/config.yml`-framed message for a config validation error."""
+    lines = [f"invalid config in {path}:"]
+    for err in exc.errors():
+        field = ".".join(str(p) for p in err["loc"]) or "(root)"
+        msg = err["msg"]
+        if err["type"] == "extra_forbidden":
+            msg = "unknown field (check the spelling; run `docsync explain` for valid fields)"
+        lines.append(f"  - {field}: {msg}")
+    return "\n".join(lines)
 
 
 def load_manifest(docs_repo: Path) -> Manifest:
@@ -110,6 +135,41 @@ def merge_manifest_pages(docs_repo: Path, pages: list[ManifestPage]) -> list[str
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return added
+
+
+# --- repo topology (mono / single / poly) -------------------------------------
+
+
+def resolve_repo_mode(
+    config: DocsyncConfig,
+    docs_repo: Path,
+    diff_repo: str,
+    manifest: Manifest,
+) -> str:
+    """Resolve the effective repo topology: ``"mono"`` | ``"single"`` | ``"poly"``.
+
+    An explicit ``config.repo_mode`` short-circuits detection. Under ``"auto"``: mono
+    when the diff's repo *is* the docs repo (their normalized keys match — so the source
+    and docs share one checkout); else poly when the manifest anchors span more than one
+    distinct (non-empty) source repo; else single.
+
+    ``diff_repo`` is the resolved ``CodeDiff.repo`` (``owner/name`` or a local path), so
+    detection works the same in CI (``--from-event``) as for a local ``--src-repo`` run —
+    both reduce to "does the changed repo equal the docs repo?".
+    """
+    if config.repo_mode != "auto":
+        return config.repo_mode
+
+    from .impact import _repo_key  # local import: keep config import-light
+
+    docs_key = _repo_key(Path(docs_repo).resolve().name)
+    if _repo_key(diff_repo) == docs_key:
+        return "mono"
+
+    repos = {
+        _repo_key(s.repo) for p in manifest.pages for s in p.sources if s.repo
+    }
+    return "poly" if len(repos) > 1 else "single"
 
 
 # --- cursor (the only mutable persisted state; committed by the Action) -------
