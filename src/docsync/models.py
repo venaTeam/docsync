@@ -204,7 +204,10 @@ class AuthoredPage(BaseModel):
 class ManifestSource(BaseModel):
     """One source-of-truth location a doc page is anchored to."""
 
-    repo: str  # matches CodeDiff.repo
+    # Which source repo this anchor belongs to (matches CodeDiff.repo). Empty = "the
+    # only/local repo": it matches any diff, so mono- and single-repo manifests can omit
+    # it entirely. Poly-repo manifests set it explicitly to scope each anchor to one repo.
+    repo: str = ""
     globs: list[str] = Field(default_factory=list)  # fnmatch globs over changed paths
     symbols: list[str] = Field(default_factory=list)  # symbol names (supports trailing *)
 
@@ -241,6 +244,14 @@ class DocsyncConfig(BaseModel):
 
     models: ModelConfig = Field(default_factory=ModelConfig)
     docs_root: str = "."  # root of the docs tree, relative to the docs repo
+    # Repository topology, governing how the source diff relates to the docs:
+    #   mono   — docs and code live in the SAME checkout; the docs subtree is filtered
+    #            out of the diff so doc edits never drive doc edits.
+    #   single — one code repo + a separate docs repo (the common cross-repo case).
+    #   poly   — many code repos + one docs repo (run once per repo; anchors are
+    #            scoped by ManifestSource.repo).
+    #   auto   — detect from the checkout + manifest (see config.resolve_repo_mode).
+    repo_mode: Literal["auto", "mono", "single", "poly"] = "auto"
     # Doc-framework adapter that owns the pages (see docsync.adapters.ADAPTERS):
     # "mintlify" (.mdx + MDX components, docs.json nav) or "markdown" (plain .md,
     # YAML frontmatter, no nav manifest). Drives frontmatter freeze, structural

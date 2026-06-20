@@ -136,6 +136,16 @@ def run(
     if polish is not None:
         config.readability_pass = polish
 
+    # Mono-repo convenience: when docs and code share one checkout, default the source
+    # to the docs repo so `docsync run --docs-repo . --base X --head Y` needs no
+    # --src-repo. Only for an explicit local run (not CI / --from-event, which carry
+    # their own repo), and only when the mode isn't pinned to a separate-repo topology.
+    if src_repo is None and base and head and not from_event and config.repo_mode in (
+        "auto",
+        "mono",
+    ):
+        src_repo = str(docs_repo)
+
     # Cursor-aware base: a manual run with a repo + head but no base diffs from the
     # last sync point (the stored cursor) instead of erroring on a missing --base.
     if src_repo and head and not base and not from_event:
@@ -160,6 +170,14 @@ def run(
     client = get_client(backend)
 
     diff = _resolve_diff(src_repo, base, head, pr_number, pr_title, from_event)
+
+    # In a mono repo the diff also carries the docs subtree; filter it so a merged doc
+    # change doesn't map onto itself and drive further doc edits.
+    repo_mode = cfg.resolve_repo_mode(config, docs_repo, diff.repo, manifest)
+    if repo_mode == "mono":
+        from .impact import filter_docs_paths
+
+        diff = filter_docs_paths(diff, config.docs_root)
 
     if cfg.already_processed(docs_repo, diff.repo, diff.head_sha):
         typer.echo(f"docsync: {diff.repo}@{diff.head_sha[:8]} already processed — skipping.")
@@ -599,7 +617,7 @@ def init(
     config with no placeholder manifest; add `--infer --src-repo name=path` to go straight
     from empty to a populated, doctor-clean manifest in one command.
     """
-    from .scaffold import detect_adapter, detect_docs_root, init_docs_repo
+    from .scaffold import detect_adapter, detect_docs_root, detect_repo_mode, init_docs_repo
 
     use_minimal = minimal or infer
     created = init_docs_repo(docs_repo, force=force, minimal=use_minimal, detect=detect)
@@ -612,9 +630,11 @@ def init(
     if use_minimal:
         root = detect_docs_root(docs_repo) if detect else "."
         adapter = detect_adapter(docs_repo, root)
+        repo_mode = detect_repo_mode(docs_repo, root) if detect else "auto"
         typer.echo(
             f"docsync: detected docs_root='{root}'"
             + (f", adapter={adapter}" if adapter else " (adapter unknown)")
+            + f", repo_mode={repo_mode}"
         )
 
     if not infer:

@@ -112,6 +112,41 @@ def merge_manifest_pages(docs_repo: Path, pages: list[ManifestPage]) -> list[str
     return added
 
 
+# --- repo topology (mono / single / poly) -------------------------------------
+
+
+def resolve_repo_mode(
+    config: DocsyncConfig,
+    docs_repo: Path,
+    diff_repo: str,
+    manifest: Manifest,
+) -> str:
+    """Resolve the effective repo topology: ``"mono"`` | ``"single"`` | ``"poly"``.
+
+    An explicit ``config.repo_mode`` short-circuits detection. Under ``"auto"``: mono
+    when the diff's repo *is* the docs repo (their normalized keys match — so the source
+    and docs share one checkout); else poly when the manifest anchors span more than one
+    distinct (non-empty) source repo; else single.
+
+    ``diff_repo`` is the resolved ``CodeDiff.repo`` (``owner/name`` or a local path), so
+    detection works the same in CI (``--from-event``) as for a local ``--src-repo`` run —
+    both reduce to "does the changed repo equal the docs repo?".
+    """
+    if config.repo_mode != "auto":
+        return config.repo_mode
+
+    from .impact import _repo_key  # local import: keep config import-light
+
+    docs_key = _repo_key(Path(docs_repo).resolve().name)
+    if _repo_key(diff_repo) == docs_key:
+        return "mono"
+
+    repos = {
+        _repo_key(s.repo) for p in manifest.pages for s in p.sources if s.repo
+    }
+    return "poly" if len(repos) > 1 else "single"
+
+
 # --- cursor (the only mutable persisted state; committed by the Action) -------
 
 

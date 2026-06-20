@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from docsync.impact import (
+    filter_docs_paths,
     find_anchor_candidates,
     map_impact,
 )
@@ -193,6 +194,74 @@ def test_anchor_no_match_returns_empty():
         page("api/alerts.mdx", source(globs=["src/routes/alerts.py"], symbols=["process_alert"])),
     )
     assert find_anchor_candidates(diff, manifest) == []
+
+
+# ---------------------------------------------------------------------------
+# Empty-repo wildcard (mono / single convenience)
+# ---------------------------------------------------------------------------
+
+
+def test_anchor_empty_repo_matches_any_diff():
+    # A source with no `repo` is a wildcard: it matches regardless of the diff's repo.
+    diff = make_diff(repo=REPO, paths=["src/routes/alerts.py"])
+    manifest = make_manifest(
+        page("api/alerts.mdx", ManifestSource(globs=["src/routes/alerts.py"])),
+    )
+    cands = find_anchor_candidates(diff, manifest)
+    assert len(cands) == 1
+    assert cands[0].page_path == "api/alerts.mdx"
+
+
+def test_anchor_explicit_repo_still_scopes_when_others_are_wildcard():
+    diff = make_diff(repo=REPO, paths=["src/routes/alerts.py"])
+    manifest = make_manifest(
+        # explicit, wrong repo → excluded even though a wildcard would have matched
+        page("api/alerts.mdx", source(repo=OTHER_REPO, globs=["src/routes/alerts.py"])),
+    )
+    assert find_anchor_candidates(diff, manifest) == []
+
+
+# ---------------------------------------------------------------------------
+# filter_docs_paths (mono-repo diff filtering)
+# ---------------------------------------------------------------------------
+
+
+def test_filter_docs_paths_drops_docs_subtree():
+    diff = make_diff(paths=["src/routes/alerts.py", "docs/reference/alerts.mdx"])
+    filtered = filter_docs_paths(diff, "docs")
+    kept = filtered.changed_paths()
+    assert "src/routes/alerts.py" in kept
+    assert "docs/reference/alerts.mdx" not in kept
+
+
+def test_filter_docs_paths_handles_renames_via_previous_path():
+    diff = CodeDiff(
+        repo=REPO,
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        files=[
+            ChangedFile(
+                path="docs/new.mdx",
+                previous_path="docs/old.mdx",
+                status=FileStatus.RENAMED,
+            ),
+            ChangedFile(path="src/x.py", status=FileStatus.MODIFIED),
+        ],
+    )
+    filtered = filter_docs_paths(diff, "docs")
+    assert [f.path for f in filtered.files] == ["src/x.py"]
+
+
+def test_filter_docs_paths_root_docs_is_noop():
+    # docs at the repo root ('.') — there's no code subtree to separate.
+    diff = make_diff(paths=["index.mdx", "guide.mdx"])
+    filtered = filter_docs_paths(diff, ".")
+    assert filtered is diff
+
+
+def test_filter_docs_paths_no_docs_files_returns_same_object():
+    diff = make_diff(paths=["src/a.py", "src/b.py"])
+    assert filter_docs_paths(diff, "docs") is diff
 
 
 # ---------------------------------------------------------------------------
