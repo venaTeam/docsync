@@ -129,6 +129,22 @@ def test_apply_edits_multi_match_is_ambiguous_and_raises():
         apply_edits(text, edit)
 
 
+def test_apply_edits_classifies_not_found_as_non_ambiguous():
+    text = "nothing to see here"
+    edit = PageEdit(edits=[EditOp(find="ABSENT", replace="x", rationale="r")])
+    with pytest.raises(EditApplicationError) as exc:
+        apply_edits(text, edit)
+    assert exc.value.ambiguous is False
+
+
+def test_apply_edits_classifies_multi_match_as_ambiguous():
+    text = "foo and foo again"
+    edit = PageEdit(edits=[EditOp(find="foo", replace="bar", rationale="r")])
+    with pytest.raises(EditApplicationError) as exc:
+        apply_edits(text, edit)
+    assert exc.value.ambiguous is True
+
+
 def test_apply_edits_never_replace_all_partial_failure_message():
     text = "a duplicated line\na duplicated line\n"
     edit = PageEdit(

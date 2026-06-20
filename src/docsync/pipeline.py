@@ -156,8 +156,32 @@ def run(
             try:
                 new_text = edits_mod.apply_edits(original, edit)
             except edits_mod.EditApplicationError as exc:
-                outcome.note = f"edit not applicable (dropped): {exc}"
-                return outcome
+                # One bounded retry, but ONLY when the failure is a non-unique `find`
+                # (matched >1 time): re-ask the edit model for the same edit with more
+                # surrounding context so each `find` becomes unique. A "not found"
+                # failure is unfixable by re-prompting, so it drops as before. This
+                # extra edit call goes through the same metered `client`.
+                if not exc.ambiguous:
+                    outcome.note = f"edit not applicable (dropped): {exc}"
+                    return outcome
+                try:
+                    retry_edit = edits_mod.generate_page_edit(
+                        page.page_path, original, diff, page, manifest_page, config,
+                        cache_diff=cache_diff, client=client,
+                        retry_hint=edits_mod.NON_UNIQUE_RETRY_HINT,
+                    )
+                    new_text = edits_mod.apply_edits(original, retry_edit)
+                except edits_mod.EditApplicationError as retry_exc:
+                    outcome.note = (
+                        f"edit not applicable after non-unique retry (dropped): "
+                        f"{retry_exc}"
+                    )
+                    return outcome
+                except Exception as retry_exc:  # noqa: BLE001 - retry must not raise
+                    outcome.note = f"non-unique retry failed (dropped): {retry_exc}"
+                    return outcome
+                edit = retry_edit
+                outcome.edit = edit
 
             # Stage 5 — validate.
             adapter = get_adapter(page.page_path, config.adapter)

@@ -7,8 +7,10 @@ anchors exactly one page.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from docsync.eval import (
@@ -336,3 +338,74 @@ def test_selfdocs_golden_is_well_formed():
         assert c.expected_pages, f"case {c.label!r} has no expected pages"
         for page in c.expected_pages:
             assert page.endswith(".mdx") and not page.startswith("docs/")
+
+
+# ---------------------------------------------------------------------------
+# embeddings recall-net contribution (offline — deterministic fake encoder)
+# ---------------------------------------------------------------------------
+
+_EMB_DIM = 64
+
+
+def _bow_encode(texts: list[str]) -> np.ndarray:
+    """Bag-of-words hashing encoder: texts sharing tokens get overlapping dims."""
+    out = np.zeros((len(texts), _EMB_DIM), dtype=np.float32)
+    for i, t in enumerate(texts):
+        for tok in t.lower().split():
+            h = int(hashlib.sha1(tok.encode()).hexdigest(), 16) % _EMB_DIM
+            out[i, h] += 1.0
+    return out
+
+
+def _emb_docs_repo(tmp_path: Path) -> Path:
+    """A docs tree with one anchored page and one UNANCHORED, alerts-heavy page."""
+    root = tmp_path / "docs"
+    (root / "api").mkdir(parents=True)
+    (root / "concepts").mkdir(parents=True)
+    (root / ".docsync" / "state").mkdir(parents=True)  # cache_dir home
+    (root / "api" / "alerts.mdx").write_text(
+        '---\ntitle: "Alerts API"\n---\n\nThe alerts endpoint ingests alerts.\n',
+        encoding="utf-8",
+    )
+    # No manifest entry → only the embeddings recall-net can surface it.
+    (root / "concepts" / "alerting-overview.mdx").write_text(
+        '---\ntitle: "Alerting"\n---\n\nalerts alerts alerting overview of alerts handling.\n',
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_embeddings_recall_net_surfaces_unanchored_page(tmp_path: Path):
+    # The recall-net's whole point: catch drift on pages the manifest doesn't anchor.
+    # This measures that contribution deterministically with a fake encoder (no model).
+    docs_repo = tmp_path
+    _emb_docs_repo(tmp_path)
+    config = DocsyncConfig(docs_root="docs", embedding_floor=0.0)
+    manifest = Manifest(
+        pages=[
+            ManifestPage(
+                path="api/alerts.mdx",
+                sources=[ManifestSource(repo=REPO, globs=["src/routes/alerts.py"])],
+            ),
+        ]
+    )
+    case = GoldenCase(
+        repo=REPO, base="b", head="h",
+        label="alerts change → anchored page + unanchored alerting concept",
+        expected_pages=["api/alerts.mdx", "concepts/alerting-overview.mdx"],
+    )
+
+    # Anchors only: the unanchored concept page is missed (recall 1/2).
+    anchors = run_eval(
+        [case], docs_repo, config, manifest, mode="map", diff_fn=_diff_touching_alerts
+    )
+    assert anchors.recall == 0.5
+    assert "concepts/alerting-overview.mdx" not in anchors.cases[0].actual
+
+    # With the recall-net: the unanchored page is surfaced too (recall 1.0).
+    with_emb = run_eval(
+        [case], docs_repo, config, manifest, mode="map",
+        use_embeddings=True, encoder=_bow_encode, diff_fn=_diff_touching_alerts,
+    )
+    assert with_emb.recall == 1.0
+    assert "concepts/alerting-overview.mdx" in with_emb.cases[0].actual

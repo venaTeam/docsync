@@ -66,6 +66,35 @@ class FakeClient:
         self.messages = _FakeMessages({"JudgeVerdict": verdict, "PageEdit": edit})
 
 
+class _ScriptedEditMessages:
+    """Serves a fixed JudgeVerdict, then successive PageEdits per `parse` call.
+
+    The PageEdit responses are popped from a list in order, so a test can script the
+    editor to return an ambiguous edit first and a disambiguated one on retry. Records
+    every PageEdit call (with its kwargs) so a test can assert the retry count + hint.
+    """
+
+    def __init__(self, verdict: JudgeVerdict, page_edits: list[PageEdit]):
+        self._verdict = verdict
+        self._page_edits = list(page_edits)
+        self.edit_calls: list[dict] = []
+
+    def parse(self, *, output_format, **kwargs):
+        if output_format.__name__ == "JudgeVerdict":
+            out = self._verdict
+        else:
+            self.edit_calls.append(kwargs)
+            out = self._page_edits.pop(0)
+        return type("Resp", (), {"parsed_output": out})()
+
+
+class ScriptedEditClient:
+    """Fake client whose editor returns each scripted PageEdit in turn."""
+
+    def __init__(self, verdict: JudgeVerdict, page_edits: list[PageEdit]):
+        self.messages = _ScriptedEditMessages(verdict, page_edits)
+
+
 @pytest.fixture()
 def docs_repo(tmp_path: Path) -> Path:
     root = tmp_path / "docs"
@@ -189,6 +218,106 @@ def test_pipeline_no_self_critique_keeps_op(docs_repo: Path):
     changed = result.changed()
     assert len(changed) == 1
     assert "/alerts/bulk" in changed[0].new_content
+
+
+# A page with a deliberately duplicated line: a short `find` ("Status: active.")
+# matches twice (ambiguous), but extending it with the preceding heading is unique.
+DUP_PAGE = """\
+---
+title: "API Gateway"
+description: "REST API service"
+---
+
+# API Gateway
+
+## Alerts
+
+Status: active.
+
+## Incidents
+
+Status: active.
+
+The service is configured via `setup_routers`.
+"""
+
+
+@pytest.fixture()
+def dup_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "docs"
+    (root / "services").mkdir(parents=True)
+    (root / "services" / "api-gateway.mdx").write_text(DUP_PAGE, encoding="utf-8")
+    (root / ".docsync").mkdir()
+    (root / ".docsync" / "manifest.yml").write_text(MANIFEST_YML, encoding="utf-8")
+    return root
+
+
+def test_pipeline_retries_once_on_non_unique_find_and_succeeds(dup_repo: Path):
+    # First editor response uses a short `find` that occurs twice (non-unique); the
+    # retry returns an op whose `find` is extended with the heading above, so it is
+    # unique. The pipeline performs exactly one retry and the page then applies.
+    config = load_config(dup_repo)
+    manifest = load_manifest(dup_repo)
+
+    ambiguous = PageEdit(
+        edits=[EditOp(find="Status: active.", replace="Status: deprecated.", rationale="r")]
+    )
+    disambiguated = PageEdit(
+        edits=[
+            EditOp(
+                find="## Incidents\n\nStatus: active.",
+                replace="## Incidents\n\nStatus: deprecated.",
+                rationale="disambiguated with heading",
+            )
+        ]
+    )
+    client = ScriptedEditClient(
+        JudgeVerdict(page_path="x", affected=True, confidence=0.9, reason="r"),
+        [ambiguous, disambiguated],
+    )
+
+    # self_critique=False isolates the edit-apply retry from the (default-on) critique,
+    # whose extra call the scripted editor isn't set up to answer.
+    result = pipeline.run(
+        _diff(), dup_repo, config, manifest, client=client, self_critique=False
+    )
+
+    changed = result.changed()
+    assert len(changed) == 1
+    assert changed[0].applied is True
+    # Exactly one retry: two editor calls total (initial + single retry).
+    assert len(client.messages.edit_calls) == 2
+    # The retry carried the non-unique hint.
+    retry_user = client.messages.edit_calls[1]["messages"][0]["content"]
+    assert "more than one place" in retry_user
+    # Only the Incidents occurrence was edited; the Alerts one is untouched.
+    assert "## Incidents\n\nStatus: deprecated." in changed[0].new_content
+    assert "## Alerts\n\nStatus: active." in changed[0].new_content
+
+
+def test_pipeline_does_not_retry_on_not_found(docs_repo: Path):
+    # A `find` that matches zero times is unfixable by re-prompting, so the page is
+    # dropped with the existing note and the editor is called exactly once.
+    config = load_config(docs_repo)
+    manifest = load_manifest(docs_repo)
+
+    not_found = PageEdit(
+        edits=[EditOp(find="THIS STRING IS ABSENT", replace="x", rationale="r")]
+    )
+    client = ScriptedEditClient(
+        JudgeVerdict(page_path="x", affected=True, confidence=0.9, reason="r"),
+        [not_found],  # a second response would only be popped on a retry
+    )
+
+    # self_critique=False so the only editor call is the single edit attempt.
+    result = pipeline.run(
+        _diff(), docs_repo, config, manifest, client=client, self_critique=False
+    )
+
+    assert result.changed() == []
+    assert len(client.messages.edit_calls) == 1  # no retry
+    dropped = [o for o in result.outcomes if not o.applied]
+    assert dropped and "edit not applicable (dropped)" in dropped[0].note
 
 
 def test_pipeline_drops_oversize_edit(docs_repo: Path):

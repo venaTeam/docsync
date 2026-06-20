@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -35,23 +34,28 @@ def _build_diff(
 
 
 def _resolve_diff(src_repo, base, head, pr_number, pr_title, from_event):
-    """Pick the diff source: explicit --from-event > explicit flags > $GITHUB_EVENT_PATH.
+    """Pick the diff source: explicit --from-event > explicit flags > CI auto-detect.
 
-    In CI the only thing wired up is the GitHub event JSON, so repo/base/head/PR are
-    derived from it automatically — no flags needed (the core "triggered by commits"
-    goal). Locally you pass --src-repo/--base/--head.
+    In CI repo/base/head/PR are derived automatically — no flags needed (the core
+    "triggered by commits" goal). The platform is auto-detected: GitLab exposes
+    ``CI_*`` env vars (signalled by ``GITLAB_CI``), GitHub writes an event JSON at
+    ``$GITHUB_EVENT_PATH``. Locally you pass --src-repo/--base/--head.
     """
     explicit = bool(src_repo and base and head)
-    event_path = from_event or (None if explicit else os.environ.get("GITHUB_EVENT_PATH"))
-    if event_path:
+    if from_event:
         from .events import diff_from_event
 
-        return diff_from_event(event_path)
+        return diff_from_event(from_event)
     if not explicit:
-        raise typer.BadParameter(
-            "provide --from-event (or run in CI with $GITHUB_EVENT_PATH set), "
-            "or all of --src-repo / --base / --head."
-        )
+        from .events import diff_from_ci
+
+        try:
+            return diff_from_ci()
+        except ValueError as exc:
+            raise typer.BadParameter(
+                "provide --from-event (or run in CI with $GITLAB_CI / "
+                "$GITHUB_EVENT_PATH set), or all of --src-repo / --base / --head."
+            ) from exc
     return _build_diff(src_repo, base, head, pr_number, pr_title)
 
 
