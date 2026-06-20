@@ -184,7 +184,7 @@ def run(
         raise typer.Exit(0)
 
     if dry_run and not open_pr:
-        history.record_run(docs_repo, result, command="run", status="dry_run")
+        history.record_run(docs_repo, result, command="run", status="dry_run", originals=originals)
         typer.echo("docsync: dry run — not writing changes. Use --no-dry-run / --open-pr to apply.")
         raise typer.Exit(0)
 
@@ -203,10 +203,12 @@ def run(
             reviewers=config.reviewers,
             labels=config.pr_labels,
         )
-        history.record_run(docs_repo, result, command="run", status="opened", pr_url=url)
+        history.record_run(
+            docs_repo, result, command="run", status="opened", pr_url=url, originals=originals
+        )
         typer.echo(f"docsync: PR -> {url}")
     else:
-        history.record_run(docs_repo, result, command="run", status="patched")
+        history.record_run(docs_repo, result, command="run", status="patched", originals=originals)
         patch = pr_mod.write_patch(docs_repo, docs_repo / "docsync.patch")
         if patch:
             typer.echo(f"docsync: patch written to {patch}")

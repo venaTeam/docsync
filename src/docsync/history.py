@@ -19,6 +19,7 @@ the `.docsync/state/` home of the cursor file in `config.py`.
 
 from __future__ import annotations
 
+import difflib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
@@ -38,9 +39,14 @@ from .models import (
 
 RUNS_FILE = "state/runs.jsonl"
 
-# Keep the persisted history bounded. Each line is tiny (no bodies), so this caps the
-# file at a few hundred KB while preserving a long, useful timeline.
+# Keep the persisted history bounded. Each line stays small (capped per-page diffs, no
+# whole-page bodies), so this caps the file at a few hundred KB while preserving a long,
+# useful timeline.
 _MAX_RECORDS = 1000
+
+# Per-page diff cap: enough to show the actual change, bounded so one big edit can't
+# bloat the record (and so we never store a whole untouched page body).
+_DIFF_MAX_LINES = 120
 
 
 def runs_path(docs_repo: Path) -> Path:
@@ -54,19 +60,23 @@ def record_run(
     command: str,
     status: RunStatus = "opened",
     pr_url: Optional[str] = None,
+    originals: Optional[dict[str, str]] = None,
     when: Optional[datetime] = None,
 ) -> RunRecord:
     """Distill `result` into a `RunRecord` and append it as one JSONL line.
 
-    `when` is injectable for deterministic tests; defaults to now (UTC). The record is
-    appended atomically (one `write`), then the file is trimmed to the most recent
-    `_MAX_RECORDS` lines if it has grown past the cap.
+    `originals` maps page_path -> pre-edit text; when present, each edited page gets a
+    bounded unified diff so the dashboard can show the actual change. `when` is injectable
+    for deterministic tests; defaults to now (UTC). The record is appended atomically (one
+    `write`), then trimmed to the most recent `_MAX_RECORDS` lines if it grew past the cap.
     """
     ts = (when or datetime.now(timezone.utc)).isoformat()
     if isinstance(result, BootstrapResult):
         record = _distill_bootstrap(result, command=command, status=status, ts=ts, pr_url=pr_url)
     else:
-        record = _distill_pipeline(result, command=command, status=status, ts=ts, pr_url=pr_url)
+        record = _distill_pipeline(
+            result, command=command, status=status, ts=ts, pr_url=pr_url, originals=originals
+        )
 
     path = runs_path(docs_repo)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,9 +114,15 @@ def load_runs(docs_repo: Path, *, limit: Optional[int] = None) -> list[RunRecord
 
 
 def _distill_pipeline(
-    result: PipelineResult, *, command: str, status: RunStatus, ts: str, pr_url: Optional[str]
+    result: PipelineResult,
+    *,
+    command: str,
+    status: RunStatus,
+    ts: str,
+    pr_url: Optional[str],
+    originals: Optional[dict[str, str]] = None,
 ) -> RunRecord:
-    pages = _page_summaries(result.outcomes)
+    pages = _page_summaries(result.outcomes, originals)
     updated = sum(1 for p in pages if p.applied)
     counts = {
         "impacted": len(pages),
@@ -151,11 +167,17 @@ def _distill_bootstrap(
     )
 
 
-def _page_summaries(outcomes: list[PageOutcome]) -> list[PageRecord]:
-    """One history-safe `PageRecord` per outcome — counts + rationales, never body text."""
+def _page_summaries(
+    outcomes: list[PageOutcome], originals: Optional[dict[str, str]] = None
+) -> list[PageRecord]:
+    """One `PageRecord` per outcome — counts, rationales, and a bounded change diff."""
     out: list[PageRecord] = []
     for o in outcomes:
         edits = o.edit.edits if o.edit else []
+        before = (originals or {}).get(o.page_path)
+        diff = None
+        if before is not None and o.new_content is not None:
+            diff = _page_diff(o.page_path, before, o.new_content)
         out.append(
             PageRecord(
                 page_path=o.page_path,
@@ -163,11 +185,32 @@ def _page_summaries(outcomes: list[PageOutcome]) -> list[PageRecord]:
                 note=o.note,
                 edit_count=len(edits),
                 rationales=[e.rationale for e in edits],
+                diff=diff,
                 validation_passed=o.validation.passed if o.validation else None,
                 warnings=list(o.validation.warnings) if o.validation else [],
             )
         )
     return out
+
+
+def _page_diff(path: str, before: str, after: str) -> Optional[str]:
+    """A bounded unified diff (original -> new) for one page, or None if unchanged."""
+    lines = list(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            lineterm="",
+            n=3,
+        )
+    )
+    if not lines:
+        return None
+    if len(lines) > _DIFF_MAX_LINES:
+        dropped = len(lines) - _DIFF_MAX_LINES
+        lines = lines[:_DIFF_MAX_LINES] + [f"… (+{dropped} more diff line(s) truncated)"]
+    return "\n".join(lines)
 
 
 def _usage_summary(usage: Optional[RunUsage]) -> Optional[UsageRecord]:

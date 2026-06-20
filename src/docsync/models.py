@@ -466,7 +466,12 @@ class PageRecord(BaseModel):
     applied: bool = False
     note: str = ""
     edit_count: int = 0
-    rationales: list[str] = Field(default_factory=list)  # EditOp.rationale only — never find/replace
+    rationales: list[str] = Field(default_factory=list)  # EditOp.rationale — the "why"
+    # A bounded unified diff of the page (original -> new) — the "what", so the dashboard
+    # can show the actual change, not just a summary. Capped in history.py; None when no
+    # before-text is available (e.g. bootstrap-authored pages). Doc content only (the
+    # published artifact) — never raw source excerpts or the full untouched page body.
+    diff: Optional[str] = None
     validation_passed: Optional[bool] = None
     warnings: list[str] = Field(default_factory=list)
 

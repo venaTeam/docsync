@@ -26,6 +26,9 @@ from docsync.models import (
 
 _WHEN = datetime(2026, 6, 20, 17, 39, tzinfo=timezone.utc)
 
+# Pre-edit text for the edited page, so record_run can compute a real diff.
+_ORIGINALS = {"reference/cli.mdx": "intro line\nA shared paragraph that stays.\nold tail\n"}
+
 
 def _pipeline_result() -> PipelineResult:
     diff = CodeDiff(
@@ -62,7 +65,7 @@ def _pipeline_result() -> PipelineResult:
                     ]
                 ),
                 validation=ValidationResult(page_path="reference/cli.mdx", passed=True),
-                new_content="SECRET-BODY-CONTENT",
+                new_content="intro line\nA shared paragraph that stays.\nNEW shiny tail\n",
             ),
             PageOutcome(
                 page_path="concepts/how.mdx",
@@ -123,15 +126,44 @@ def test_distills_pipeline_counts_and_rationales(tmp_path: Path):
     assert rec.usage.by_model[0].tokens == 1500  # prompt(1000) + output(500)
 
 
-def test_secret_hygiene_no_body_text_persisted(tmp_path: Path):
+def test_no_raw_edit_ops_or_full_body_fields(tmp_path: Path):
+    # Records keep rationales + a (bounded) diff, never the raw EditOp find/replace fields
+    # or a standalone full-page body field.
     history.record_run(tmp_path, _pipeline_result(), command="run", when=_WHEN)
     raw = history.runs_path(tmp_path).read_text()
-    # The persisted line must carry rationale text but never find/replace/new_content bodies.
-    assert "document the --polish flag" in raw
-    assert "SECRET-FIND-TOKEN" not in raw
-    assert "SECRET-REPLACE-TOKEN" not in raw
-    assert "SECRET-BODY-CONTENT" not in raw
-    assert '"find"' not in raw and '"new_content"' not in raw
+    assert "document the --polish flag" in raw  # rationale kept
+    assert "SECRET-FIND-TOKEN" not in raw  # find text never stored
+    assert "SECRET-REPLACE-TOKEN" not in raw  # replace text never stored
+    assert '"find"' not in raw and '"replace"' not in raw and '"new_content"' not in raw
+
+
+def test_page_diff_stored_when_originals_given(tmp_path: Path):
+    rec = history.record_run(
+        tmp_path, _pipeline_result(), command="run", originals=_ORIGINALS, when=_WHEN
+    )
+    applied = next(p for p in rec.pages if p.applied)
+    assert applied.diff is not None
+    assert "-old tail" in applied.diff  # the removed line
+    assert "+NEW shiny tail" in applied.diff  # the added line
+    assert "a/reference/cli.mdx" in applied.diff  # file header
+    # No before-text for the dropped page -> no diff.
+    dropped = next(p for p in rec.pages if not p.applied)
+    assert dropped.diff is None
+
+
+def test_page_diff_is_bounded(tmp_path: Path):
+    # A huge change is truncated so one big edit can't bloat the record.
+    big_before = "\n".join(f"line {i}" for i in range(500))
+    big_after = "\n".join(f"CHANGED {i}" for i in range(500))
+    result = PipelineResult(
+        diff=CodeDiff(repo="r", base_sha="b", head_sha="h"),
+        outcomes=[PageOutcome(page_path="big.mdx", applied=True, new_content=big_after)],
+    )
+    rec = history.record_run(
+        tmp_path, result, command="run", originals={"big.mdx": big_before}, when=_WHEN
+    )
+    assert "truncated" in rec.pages[0].diff
+    assert rec.pages[0].diff.count("\n") <= history._DIFF_MAX_LINES + 1
 
 
 def test_distills_bootstrap_counts(tmp_path: Path):

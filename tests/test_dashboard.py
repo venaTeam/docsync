@@ -43,8 +43,12 @@ def _run_record(ts: str, *, command="run", status="opened", cost=0.10, **kw) -> 
         base_sha="aaaaaaaa", head_sha="bbbbbbbb", pr_number=42,
         counts=counts, usage=_usage(cost),
         pages=[
-            PageRecord(page_path="reference/cli.mdx", applied=True, edit_count=1,
-                       rationales=["document the --polish flag"]),
+            PageRecord(
+                page_path="reference/cli.mdx", applied=True, edit_count=1,
+                rationales=["document the --polish flag"],
+                diff="--- a/reference/cli.mdx\n+++ b/reference/cli.mdx\n"
+                     "@@ -1,2 +1,2 @@\n-old documentation line\n+new documentation line\n context",
+            ),
         ],
         **kw,
     )
@@ -142,21 +146,28 @@ def test_render_html_contains_expected_stats():
     assert "docsync dashboard" in html
     assert "venaTeam/docsync" in html
     assert "/pull/42" in html  # PR link synthesized from repo + pr_number
-    assert "document the --polish flag" in html  # latest-changes drill-down
+    assert "document the --polish flag" in html  # latest-changes drill-down (the "why")
     assert "this month" in html  # budget banner
+    # the actual change is rendered as a colored diff (the "what")
+    assert "pre class=diff" in html
+    assert "<span class='add'>+new documentation line</span>" in html
+    assert "<span class='del'>-old documentation line</span>" in html
 
 
 def test_render_escapes_injected_html():
     runs = [_run_record("2026-06-10T10:00:00+00:00", cost=0.10,
                         pr_title="<script>alert(1)</script>")]
-    # also smuggle an injection via the page rationale
+    # also smuggle injections via the page rationale and the diff body
     runs[0].pages[0].rationales = ["<img src=x onerror=alert(2)>"]
+    runs[0].pages[0].diff = "@@ -1 +1 @@\n+<svg onload=alert(3)>\n-gone"
     cfg = _config()
     health = dash.build_health(Path("/nonexistent"), cfg, _manifest(), {})
     html = dash.render_dashboard(runs, cfg, _manifest(), health, now=_now())
     assert "<script>alert(1)</script>" not in html
     assert "<img src=x onerror=alert(2)>" not in html
     assert "&lt;img src=x onerror=alert(2)&gt;" in html
+    assert "<svg onload=alert(3)>" not in html  # diff content is escaped too
+    assert "&lt;svg onload=alert(3)&gt;" in html
 
 
 def test_render_empty_history():

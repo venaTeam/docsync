@@ -250,6 +250,15 @@ details { border-bottom: 1px solid #21262d; padding: 8px 0; }
 summary { cursor: pointer; } summary::-webkit-details-marker { color: #8b949e; }
 ul.r { margin: 8px 0 4px 18px; padding: 0; color: #c9d1d9; } ul.r li { margin: 2px 0; }
 .muted { color: #8b949e; } code { background: #161b22; padding: 1px 5px; border-radius: 4px; }
+.change { margin: 8px 0 4px; }
+pre.diff { background: #010409; border: 1px solid #21262d; border-radius: 6px; padding: 8px 0;
+           margin: 6px 0 2px; overflow-x: auto;
+           font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre.diff span { display: block; white-space: pre; padding: 0 12px; }
+.diff .add { color: #3fb950; background: #2ea04326; }
+.diff .del { color: #f85149; background: #f8514926; }
+.diff .hunk { color: #58a6ff; background: #1f6feb1a; }
+.diff .fhdr { color: #8b949e; }
 svg { display: block; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 13px; }
 .kv dt { color: #8b949e; } .kv dd { margin: 0; }
@@ -438,12 +447,33 @@ def _changes_html(runs: list[RunRecord], *, recent: int = 8) -> str:
         for p in touched:
             rats = "".join(f"<li>{escape(rat)}</li>" for rat in p.rationales)
             warns = "".join(f"<li class=warn>⚠ {escape(w)}</li>" for w in p.warnings)
-            body = f"<ul class=r>{rats}{warns}</ul>" if (rats or warns) else ""
-            items.append(f"<div><code>{escape(p.page_path)}</code>{body}</div>")
+            why = f"<ul class=r>{rats}{warns}</ul>" if (rats or warns) else ""
+            change = _diff_html(p.diff) if p.diff else ""
+            items.append(
+                f"<div class=change><code>{escape(p.page_path)}</code>{why}{change}</div>"
+            )
         blocks.append(f"<details>{head}{''.join(items)}</details>")
     if not blocks:
         return "<div class=panel>No applied page changes recorded yet.</div>"
     return "".join(blocks)
+
+
+def _diff_html(diff: str) -> str:
+    """Render a unified-diff string as a colored, escaped <pre> block."""
+    rows = []
+    for ln in diff.split("\n"):
+        if ln.startswith(("+++", "---")):
+            cls = "fhdr"
+        elif ln.startswith("@@"):
+            cls = "hunk"
+        elif ln.startswith("+"):
+            cls = "add"
+        elif ln.startswith("-"):
+            cls = "del"
+        else:
+            cls = ""
+        rows.append(f"<span class='{cls}'>{escape(ln) or '&nbsp;'}</span>")
+    return "<pre class=diff>" + "".join(rows) + "</pre>"
 
 
 def _health_html(h: HealthPanel) -> str:
