@@ -44,7 +44,7 @@ def run(
     *,
     use_embeddings: bool = False,
     check_links: bool = False,
-    self_critique: bool = False,
+    self_critique: bool | None = None,
     min_confidence: float | None = None,
     max_pages: int | None = None,
     client=None,
@@ -62,6 +62,10 @@ def run(
     docs_repo = Path(docs_repo)
     docs_root = docs_repo / config.docs_root
     result = PipelineResult(diff=diff)
+
+    # None ⇒ take the configured default (on). An explicit bool (CLI flag) overrides.
+    if self_critique is None:
+        self_critique = config.self_critique
 
     # Meter every LLM call by wrapping the client once, here. When no client is
     # supplied the stages lazily build their own (unmetered) client; the CLI and
@@ -156,7 +160,7 @@ def run(
                 return outcome
 
             # Stage 5 — validate.
-            adapter = get_adapter(page.page_path)
+            adapter = get_adapter(page.page_path, config.adapter)
             validation = validate_page(
                 page.page_path, original, new_text, manifest_page, adapter,
                 check_links=check_links, docs_root=docs_root,

@@ -267,7 +267,8 @@ def test_detect_docs_root_falls_back_to_mdx_common_ancestor(tmp_path: Path) -> N
     (tmp_path / "site" / "reference" / "a.mdx").write_text("# a\n", encoding="utf-8")
     (tmp_path / "site" / "concepts" / "b.mdx").write_text("# b\n", encoding="utf-8")
     assert detect_docs_root(tmp_path) == "site"
-    assert detect_adapter(tmp_path, "site") == ""  # no docs.json -> unknown
+    # An .mdx tree (even without docs.json) implies the Mintlify/MDX adapter.
+    assert detect_adapter(tmp_path, "site") == "mintlify"
 
 
 def test_detect_docs_root_defaults_to_dot_at_root(tmp_path: Path) -> None:
@@ -286,7 +287,28 @@ def test_minimal_init_detects_root_and_writes_no_manifest(tmp_path: Path) -> Non
     assert not (base / MANIFEST_FILE).exists()  # no placeholder manifest in minimal mode
 
     # The minimal config round-trips to the detected docs_root.
-    assert load_config(tmp_path).docs_root == "docs"
+    cfg = load_config(tmp_path)
+    assert cfg.docs_root == "docs"
+    assert cfg.adapter == "mintlify"  # default; not written for the default framework
+
+
+def test_detect_adapter_markdown_from_docusaurus_config(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "intro.md").write_text("# intro\n", encoding="utf-8")
+    (tmp_path / "docusaurus.config.js").write_text("module.exports = {}\n", encoding="utf-8")
+    assert detect_adapter(tmp_path, ".") == "markdown"
+
+
+def test_minimal_init_writes_markdown_adapter(tmp_path: Path) -> None:
+    # A plain `.md`-only tree → the markdown adapter, persisted into the minimal config
+    # so the adopter doesn't have to know the field exists.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "guide.md").write_text("# guide\n", encoding="utf-8")
+
+    init_docs_repo(tmp_path, minimal=True, detect=True)
+    cfg = load_config(tmp_path)
+    assert cfg.docs_root == "docs"
+    assert cfg.adapter == "markdown"
 
 
 def test_minimal_init_at_root_omits_docs_root_key(tmp_path: Path) -> None:

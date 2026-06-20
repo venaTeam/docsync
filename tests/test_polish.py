@@ -13,6 +13,7 @@ from pathlib import Path
 
 from docsync import bootstrap as bootstrap_mod
 from docsync import pipeline, polish, style
+from docsync.critique import CritiqueVerdict
 from docsync.cost import MeteredClient, UsageMeter
 from docsync.models import (
     AuthoredPage,
@@ -264,7 +265,11 @@ _PIPE_MANIFEST = (
 
 
 class _PipelineClient:
-    """JudgeVerdict for the judge; first PageEdit = surgical edit, second = polish."""
+    """JudgeVerdict for the judge; first PageEdit = surgical edit, second = polish.
+
+    Self-critique is on by default, so a CritiqueVerdict call sits between the edit and
+    the polish — answer it with a keep-everything verdict so the surgical op survives and
+    the next PageEdit pop is the polish (matching judge → edit → critique → polish)."""
 
     def __init__(self, verdict, surgical: PageEdit, polish_edit: PageEdit):
         self._verdict = verdict
@@ -275,6 +280,8 @@ class _PipelineClient:
                 fmt = kwargs.get("output_format")
                 if fmt is JudgeVerdict:
                     return _Resp(self._verdict)
+                if fmt is CritiqueVerdict:
+                    return _Resp(CritiqueVerdict(faithful=True, rejected_finds=[]))
                 return _Resp(self._edits.pop(0))
 
         self.messages = _Messages()
