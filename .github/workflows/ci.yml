@@ -1,0 +1,72 @@
+# docsync — CI gate.
+#
+# The dogfood loop (`docsync-self.yml`) proves docsync end-to-end, but nothing guarded
+# *changes to docsync itself*. This workflow does: every PR and every push to `main`
+# must pass lint + the offline test suite. Both are fast and free — no API key, no
+# network (tests fake the LLM client, keyed on output_format).
+#
+# A second, currently NON-BLOCKING job wires the regression-eval gate
+# (`docsync eval --mode map --min-recall …`). It activates as a hard gate once a
+# *self-docs* golden set exists at tests/eval/golden_selfdocs.json — one anchored to
+# THIS repo's manifest (which anchors `docsync`), not the Keep-docs golden.json fixture.
+# See the eval-gate job for how to flip it on.
+name: ci
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install (with the embeddings extra so all modules import)
+        run: poetry install -E embeddings
+
+      - name: Ruff (lint — the declared gate; nothing ran it before)
+        run: poetry run ruff check src/ tests/
+
+      - name: Pytest (full offline suite — no network, no API key)
+        run: poetry run pytest -q
+
+  eval-gate:
+    name: mapping-accuracy gate (map-mode)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install (embeddings extra for the recall-net)
+        run: poetry install -E embeddings
+
+      - name: Run the map-mode regression gate (free — anchors only, no LLM)
+        # The golden set is self-docs (repo key 'docsync'), so GITHUB_TOKEN — which can
+        # read THIS repo — is enough for `diff_github` to fetch each case's diff.
+        # --min-recall 1.0: every page a real change edited must still be anchored;
+        # mapping recall is the safety property. map-mode precision is intentionally low
+        # (it over-selects, see eval.py), so it is NOT gated here. If a deliberate
+        # manifest change narrows an anchor, update the golden set in the same PR.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          poetry run docsync eval \
+            --docs-repo . \
+            --golden tests/eval/golden_selfdocs.json \
+            --mode map --min-recall 1.0

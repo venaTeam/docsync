@@ -689,13 +689,24 @@ def eval(  # noqa: A001 - intentional command name
     use_embeddings: bool = typer.Option(False, help="Also use the embeddings recall-net when mapping."),
     backend: str = typer.Option("api", help="LLM backend for --mode full: 'api' or 'claude-code'."),
     json_out: Optional[Path] = typer.Option(None, help="Write the full EvalReport JSON here."),
+    min_recall: Optional[float] = typer.Option(
+        None, help="Fail (exit 1) if recall falls below this floor — the regression gate for CI."
+    ),
+    min_precision: Optional[float] = typer.Option(
+        None, help="Fail (exit 1) if precision falls below this floor. In --mode map, precision is "
+        "intentionally low on true-negative-at-edit cases; gate recall there, not precision.",
+    ),
 ):
     """Score docsync against a labeled golden set: page-level precision/recall/F1.
 
     `--mode map` is free (anchors only) and measures mapping recall; `--mode full`
     runs the editor and measures edit-stage precision (costs LLM calls).
+
+    Pass `--min-recall` (and/or `--min-precision`) to turn the score into a CI gate:
+    the command exits non-zero when the measured score drops below the floor, so a
+    judge/anchor/prompt regression fails the build instead of shipping silently.
     """
-    from .eval import load_golden, run_eval
+    from .eval import load_golden, run_eval, threshold_breaches
 
     config = cfg.load_config(docs_repo)
     manifest = cfg.load_manifest(docs_repo)
@@ -726,6 +737,12 @@ def eval(  # noqa: A001 - intentional command name
     if json_out:
         json_out.write_text(report.model_dump_json(indent=2), encoding="utf-8")
         typer.echo(f"docsync: eval report written to {json_out}")
+
+    # Regression gate: fail the build when a floor is set and the score is below it.
+    breaches = threshold_breaches(report, min_recall=min_recall, min_precision=min_precision)
+    if breaches:
+        typer.echo("docsync eval: BELOW THRESHOLD — " + "; ".join(breaches))
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,30 @@
+{
+  "_about": "Self-docs golden set — anchored to THIS repo's manifest (repo key 'docsync'), so it is runnable in CI via `docsync eval --docs-repo . --mode map`. Cases are real: each base..head is a code range docsync actually synced on `main`, and expected_pages are the docs/* pages the corresponding `docs: sync` commit really edited (the EDIT-stage ground truth; docs_root='docs' is stripped). map-mode anchor mapping must COVER every edited page (recall=1.0 today) — map-mode precision is intentionally low (it over-selects; see eval.py), so gate recall, not precision. Grow with narrower, single-file cases to also exercise precision in full mode.",
+  "cases": [
+    {
+      "repo": "venaTeam/docsync",
+      "base": "10c2ef975ce1ff983959c4c4eb95081f77d7fffe",
+      "head": "f262d0839035a32962a0b9ce3898df7bb257cb46",
+      "label": "content-quality-prompts + infer/zero-config init (real `docs: sync` c9afb74)",
+      "expected_pages": [
+        "getting-started/basic-workflow.mdx",
+        "getting-started/your-first-project.mdx",
+        "operations/cost-optimization.mdx",
+        "reference/cli-commands.mdx"
+      ]
+    },
+    {
+      "repo": "venaTeam/docsync",
+      "base": "f262d0839035a32962a0b9ce3898df7bb257cb46",
+      "head": "9bc4729803f8ab007838940dc55aecc14c29cc1a",
+      "label": "structural-additive anchors + lazy-senior perf pass (real `docs: sync` c6b6435)",
+      "expected_pages": [
+        "architecture/data-flow.mdx",
+        "architecture/planning-engine.mdx",
+        "concepts/embedding-search.mdx",
+        "concepts/quality-assessment.mdx",
+        "reference/doc-adapters.mdx"
+      ]
+    }
+  ]
+}
