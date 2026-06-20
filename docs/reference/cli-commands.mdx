@@ -204,7 +204,14 @@ Pass `--polish` / `--no-polish` to toggle the readability pass: after authoring 
 
 ## `docsync eval`
 
-Evaluation harness for assessing docsync's output.
+Evaluation harness for assessing docsync's output: it scores docsync against a labeled golden set and reports page-level precision/recall/F1. `--mode map` is free (anchors only) and measures mapping recall; `--mode full` runs the editor and measures edit-stage precision (costs LLM calls).
+
+Pass `--min-recall` and/or `--min-precision` to turn the score into a CI regression gate — the command exits non-zero when the measured score drops below the floor, so a judge/anchor/prompt regression fails the build instead of shipping silently.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--min-recall` | `float` | `None` | Fail (exit 1) if recall falls below this floor — the regression gate for CI. |
+| `--min-precision` | `float` | `None` | Fail (exit 1) if precision falls below this floor. In `--mode map`, precision is intentionally low on true-negative-at-edit cases; gate recall there, not precision. |
 
 ---
 
