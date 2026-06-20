@@ -111,6 +111,8 @@ This is what makes CI "just work": in CI, repo / base / head / PR are derived au
 
 A manual run that passes `--src-repo` and `--head` but omits `--base` falls back to the stored cursor: `_base_or_cursor` resolves the last `head_sha` docsync processed for that repo (matched by `_repo_key` normalization, so a bare name still matches an `owner/name` cursor) and uses it as the "since last sync" base — raising a `BadParameter` when no cursor exists yet. The `map` command shares this fallback.
 
+The repo topology shapes what reaches impact mapping. `cfg.resolve_repo_mode` resolves an effective `mono` / `single` / `poly` mode (explicit `config.repo_mode`, else auto-detected from whether the diff's repo *is* the docs repo and how many source repos the manifest spans). In a **mono** repo — docs and code sharing one checkout — the resolved diff also carries the docs subtree, so `run` filters it through `impact.filter_docs_paths`, dropping files under `docs_root` so a merged doc change can't map onto itself and drive further edits.
+
 ### 4 · Impact mapping (update flow only)
 
 Given a diff, docsync must decide *which pages could be affected*. Two complementary strategies feed the candidate list (see `impact.find_anchor_candidates` and `impact.find_embedding_candidates`):
@@ -129,6 +131,8 @@ Candidates can be filtered by `--min-confidence` and capped by `--max-pages` (hi
 ### 5 · Authoring
 
 This is where the LLM writes documentation.
+
+A `thoroughness` dial (`light | medium | high`, from `config.thoroughness` / `config.thoroughness_by_kind` or the `--thoroughness` flag) tunes how much gets written: in bootstrap it sizes the plan (a small essential spine vs. a page per subsystem) and each page's depth; in the update flow it sets edit depth and the diff-size token budget.
 
 In the **update flow**, `generate_page_edit` proposes a `PageEdit` for each impacted page — a list of find/replace `EditOp`s, each with a `rationale`, plus an optional `no_change_reason` when the page needs no edit. Edits are surgical: they change existing prose rather than rewriting whole files.
 

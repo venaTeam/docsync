@@ -82,7 +82,7 @@ You need a docs repo checkout and a way for the LLM calls to authenticate. Pick 
     </Warning>
   </Step>
   <Step title="Author the pages">
-    Each planned page is authored into full MDX with a kind-specific prompt, in parallel. Every call is metered, so cost accrues on the run's usage. With `--polish` (opt-in, overriding `config.readability_pass`), each authored page then runs a fact-frozen readability pass for a leading summary and scannable structure, falling back to the original text on any failure.
+    Each planned page is authored into full MDX with a kind-specific prompt, in parallel. The `--thoroughness` level (`light` | `medium` | `high`, overriding `config.thoroughness`) controls how deep each page goes and how big the planned site is — `light` keeps the IA to an essential spine, `high` authors a page per significant subsystem and API. Every call is metered, so cost accrues on the run's usage. With `--polish` (opt-in, overriding `config.readability_pass`), each authored page then runs a fact-frozen readability pass for a leading summary and scannable structure, falling back to the original text on any failure.
   </Step>
   <Step title="Validate and emit">
     New pages pass through `validate_new_page` — absolute gates, since there is no original to diff against. Surviving pages are written to disk along with ordered nav sections and manifest anchors, then opened as a PR.
@@ -106,7 +106,7 @@ This is the path you'll wire into CI. By default it is a **dry run** — it comp
           --base main --head HEAD
         ```
 
-        If `--src-repo` is an existing path with a `.git` directory, docsync diffs the local checkout; otherwise it treats the value as a GitHub `owner/name`.
+        If `--src-repo` is an existing path with a `.git` directory, docsync diffs the local checkout; otherwise it treats the value as a GitHub `owner/name`. In a mono repo (docs and code share one checkout), `--src-repo` defaults to the docs repo and the docs subtree is filtered out of the diff so merged doc changes don't map onto themselves.
       </Tab>
       <Tab title="From a CI event">
         ```bash
@@ -144,6 +144,7 @@ This is the path you'll wire into CI. By default it is a **dry run** — it comp
     - `--self-critique` / `--no-self-critique` adversarially re-checks each generated edit against the diff (one extra judge-model call per page) and drops edits the change doesn't justify. It runs **on by default** (overriding `config.self_critique`); pass `--no-self-critique` to turn it off.
     - `--min-confidence <0-1>` skips the edit stage entirely for pages below that impact confidence, overriding the configured floor — useful for a conservative first rollout.
     - `--polish` runs an opt-in, fact-frozen readability pass after a validated edit, revising the page for a leading summary and scannable structure (one extra edit-model call per page, a larger diff). It overrides `config.readability_pass` and falls back to the surgical edit on any failure, so it never regresses a valid page. Off by default.
+    - `--thoroughness <light|medium|high>` sets the generation thoroughness, controlling edit depth and the diff-size token budget (overrides `config.thoroughness`, default `medium`). `light` makes tighter, more conservative edits; `high` edits more exhaustively.
 
     <Note>
       `--use-embeddings` (on by default) is a recall-net that also surfaces drift on pages the manifest doesn't anchor. It degrades gracefully to anchors-only if the embeddings extra isn't installed. `--max-pages` caps how many pages reach the (expensive) edit stage; the rest are reported, not edited.

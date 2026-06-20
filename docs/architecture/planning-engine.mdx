@@ -61,7 +61,7 @@ The digest cap exists so a large platform can't overflow the planner's context w
 
 ## Step 2 — Build the planner prompt
 
-`build_plan_prompt(digests, existing_routes=…, existing_pages=…)` returns a `(system, user)` pair. The **system** prompt is where the engine encodes its opinion about what good documentation looks like. It instructs the model to act as a senior technical writer and to:
+`build_plan_prompt(digests, existing_routes=…, existing_pages=…, thoroughness=…)` returns a `(system, user)` pair. `plan_docs` passes `config.thoroughness_for()`, so the configured thoroughness level shapes how big a site the planner targets. The **system** prompt is where the engine encodes its opinion about what good documentation looks like. It instructs the model to act as a senior technical writer and to:
 
 - Design a real **reading flow**, not a flat list of API pages.
 - Organize pages into ordered **sections**, drawn from the `SECTION_ORDER` vocabulary (Getting Started → Concepts → Architecture → Reference → Operations).

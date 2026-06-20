@@ -40,7 +40,7 @@ Rather than emit a flat list of API pages, docsync plans a real reading flow. Pa
   </Card>
 </CardGroup>
 
-Sections follow a deliberate order — Getting Started → Concepts → Architecture → Reference → Operations. Every page anchors to **real source code** through one or more `sources` entries (a `repo`, `globs`, and optional `symbols`):
+Sections follow a deliberate order — Getting Started → Concepts → Architecture → Reference → Operations. Every page anchors to **real source code** through one or more `sources` entries (an optional `repo`, plus `globs`, and optional `symbols`). In a mono- or single-repo setup `repo` can be omitted — an empty value matches the only/local repo; poly setups set it explicitly to scope each anchor:
 
 - **Reference pages** anchor to specific files and symbols.
 - **Concept and guide pages** anchor to broader globs over the subsystem(s) they describe, with few or no symbols.
@@ -97,7 +97,7 @@ docsync normalizes these paths and derives navigation routes from them:
 
 ## Tuning the plan
 
-Two controls shape how much docsync generates:
+Three controls shape how much docsync generates:
 
 <Tabs>
   <Tab title="Page count">
@@ -105,6 +105,9 @@ Two controls shape how much docsync generates:
   </Tab>
   <Tab title="Context limits">
     To keep a large platform from overflowing the planner's context, the digest handed to the planner is capped per repo, and a page's author prompt excerpts only a bounded number of source files. Repos with more files than the cap show a truncation note in the digest.
+  </Tab>
+  <Tab title="Thoroughness">
+    `thoroughness` (`light` | `medium` | `high`, default `medium`) sets how big a site to plan and how deep each page goes — `light` targets the essential 3-6 page spine, `medium` a focused 7-15 pages, `high` a comprehensive page-per-subsystem site with a larger authoring budget. Set it in `config.yml`, override per run with `--thoroughness`, or tune per page kind via `thoroughness_by_kind`.
   </Tab>
 </Tabs>
 

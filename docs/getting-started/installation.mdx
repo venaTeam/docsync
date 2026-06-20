@@ -22,7 +22,7 @@ Everything docsync needs lives inside your docs repo under `.docsync/`:
 
 ```
 .docsync/
-  config.yml          # DocsyncConfig (models, thresholds, reviewers)
+  config.yml          # DocsyncConfig (models, thresholds, repo_mode, thoroughness, reviewers)
   manifest.yml        # Manifest (page <-> source mapping) — the heart of mapping
   state/cursors.json  # last processed head_sha per source repo (idempotency)
 ```
@@ -57,7 +57,7 @@ An LLM backend is only needed later, when you run the full pipeline (`docsync ru
     docsync --help
     ```
 
-    You should see the top-level help: "Keep documentation in sync with code changes." The core subcommands are `run`, `map`, and `index`, plus the onboarding commands `init` and `doctor`.
+    You should see the top-level help: "Keep documentation in sync with code changes." The core subcommands are `run`, `map`, and `index`, plus the onboarding commands `init`, `doctor`, and `explain` (the latter documents every config field and the manifest schema).
   </Step>
 
   <Step title="Scaffold .docsync/ with docsync init">
@@ -95,7 +95,7 @@ An LLM backend is only needed later, when you run the full pipeline (`docsync ru
         max_diff_lines: 60              # per-page net-changed-lines guardrail
     ```
 
-    Set `path` to a real page under your `docs_root`, and each source's `repo`/`globs`/`symbols` to the code that page describes. These anchors are what impact mapping matches changed files against.
+    Set `path` to a real page under your `docs_root`, and each source's `repo`/`globs`/`symbols` to the code that page describes. These anchors are what impact mapping matches changed files against. In a single- or mono-repo setup `repo` is optional — omit it and the anchor matches the only/local repo; poly manifests set it explicitly to scope each anchor to one repo.
   </Step>
 
   <Step title="Review config.yml">
@@ -107,6 +107,8 @@ An LLM backend is only needed later, when you run the full pipeline (`docsync ru
       judge_model: ...
       edit_effort: ...
     docs_root: "."          # root of the docs tree, where page paths resolve
+    repo_mode: auto         # repo topology: auto | mono | single | poly
+    thoroughness: medium    # generation depth: light | medium | high
     adapter: mintlify       # doc framework: "mintlify" (.mdx) or "markdown" (plain .md)
     reviewers: []           # GitHub handles requested on opened doc-update PRs
     pr_labels: [docsync]    # labels applied to opened docs PRs
@@ -118,6 +120,10 @@ An LLM backend is only needed later, when you run the full pipeline (`docsync ru
     <Note>
       For a conservative first rollout, raise `min_edit_confidence` (e.g. `0.7`) so only high-confidence pages reach the edit stage. The same value can be overridden per-run with `--min-confidence`.
     </Note>
+
+    <Tip>
+      Config is all-optional with sane defaults, but unknown keys are now **rejected** (a typo'd field is a friendly error, not silently ignored). Run `docsync explain` to list every field, its type, default, and meaning, or `docsync explain manifest` for the manifest schema.
+    </Tip>
   </Step>
 
   <Step title="Validate the manifest with doctor">

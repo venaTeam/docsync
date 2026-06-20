@@ -3,7 +3,9 @@ title: "Cost Optimization Strategies"
 description: "Reduce LLM API spend and tune token usage in docsync by capping per-stage tokens, pricing each model accurately, and monitoring run cost with UsageMeter and render_usage_md."
 ---
 
-Every docsync LLM stage — the impact judge, edit generation, self-critique, the bootstrap planner, page authoring, and the opt-in readability polish (metered under the `polish` stage, off by default, one extra edit-model call per produced page) — runs through an injectable `client`, and that client is wrapped once in a `MeteredClient`. The wrapper records token `usage` off every response, so cost is accumulated centrally without touching individual call sites. This guide walks through the three levers you control: **planning** (token caps), **batching/attribution** (per-stage metering), and **monitoring** (rendered cost summaries).
+This guide explains how to reduce docsync's LLM API spend using three levers you control: **planning** (token caps), **metering** (per-stage attribution), and **monitoring** (rendered cost summaries).
+
+Every docsync LLM stage — the impact judge, edit generation, self-critique, the bootstrap planner, page authoring, and the opt-in readability polish (metered under the `polish` stage, off by default, one extra edit-model call per produced page) — runs through an injectable `client`, and that client is wrapped once in a `MeteredClient`. The wrapper records token `usage` off every response, so cost is accumulated centrally without touching individual call sites.
 
 <Note>
   All dollar figures docsync reports are **estimates**. `RunUsage.estimated` is always `True` because prices come from a built-in table (`PRICING`) that can drift from your actual Anthropic bill. Use the numbers for relative comparison and budgeting, not reconciliation.
@@ -30,7 +32,7 @@ The cheapest token is the one you never request. The bootstrap pipeline sets har
 | Constant | Value | What it caps |
 | --- | --- | --- |
 | `_PLAN_MAX_TOKENS` | `6_000` | `max_tokens` for the single IA planner (judge-model) call |
-| `_AUTHOR_MAX_TOKENS` | `8_000` | `max_tokens` for each per-page authoring call |
+| `_AUTHOR_MAX_TOKENS` | `8_000` | Baseline `max_tokens` per authoring call, scaled by thoroughness via `style.tokens_for` |
 | `_DIGEST_MAX_CHARS_PER_REPO` | `12_000` | How much of each repo digest the planner sees |
 | `_MAX_EXCERPT_FILES` | `6` | Source files excerpted into one page's author prompt |
 
@@ -94,7 +96,7 @@ Metering is added by wrapping the client **once**, not by editing call sites. `M
     with cost.stage("author"):
         resp = client.messages.parse(
             model="claude-opus-4-...",
-            max_tokens=_AUTHOR_MAX_TOKENS,
+            max_tokens=style.tokens_for(thoroughness, _AUTHOR_MAX_TOKENS),
             ...,
         )
     ```
@@ -155,7 +157,7 @@ The per-model lines carry the `(stage)` suffix, so you can immediately see which
 
 <Tabs>
   <Tab title="Reduce output tokens">
-    Output is the most expensive class on every tier (e.g. `75.0` for Opus). Lower `_AUTHOR_MAX_TOKENS` / `_PLAN_MAX_TOKENS` to bound what each call can generate.
+    Output is the most expensive class on every tier (e.g. `75.0` for Opus). Lower `_AUTHOR_MAX_TOKENS` / `_PLAN_MAX_TOKENS` to bound what each call can generate, or set a lower `thoroughness` (`light`) to scale the author/edit caps down automatically via `style.tokens_for`.
   </Tab>
   <Tab title="Reduce input tokens">
     Shrink prompts: lower `_DIGEST_MAX_CHARS_PER_REPO` (planner input) and `_MAX_EXCERPT_FILES` (per-page author input) so fewer source bytes are sent.
