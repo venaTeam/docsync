@@ -316,3 +316,23 @@ def test_threshold_recall_at_floor_passes():
 def test_threshold_precision_and_recall_both_breach():
     breaches = threshold_breaches(_report(0.30, 0.20), min_recall=0.50, min_precision=0.50)
     assert len(breaches) == 2
+
+
+# ---------------------------------------------------------------------------
+# self-docs golden set — offline structural guard (the CI gate's fixture)
+# ---------------------------------------------------------------------------
+
+
+def test_selfdocs_golden_is_well_formed():
+    """The CI eval gate runs this file with real diffs; here we only guard its shape
+    offline so a typo/corruption fails in unit tests, not mid-CI-run."""
+    path = Path(__file__).parent / "eval" / "golden_selfdocs.json"
+    cases = load_golden(path)
+    assert cases, "self-docs golden set must not be empty"
+    for c in cases:
+        # Same-repo so CI's GITHUB_TOKEN can fetch the diff; positives must name pages.
+        assert c.repo == "venaTeam/docsync"
+        assert c.base and c.head
+        assert c.expected_pages, f"case {c.label!r} has no expected pages"
+        for page in c.expected_pages:
+            assert page.endswith(".mdx") and not page.startswith("docs/")

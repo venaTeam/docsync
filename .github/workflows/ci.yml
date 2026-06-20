@@ -43,10 +43,6 @@ jobs:
   eval-gate:
     name: mapping-accuracy gate (map-mode)
     runs-on: ubuntu-latest
-    # Non-blocking until a self-docs golden set is curated (then drop this line so a
-    # recall regression fails the build). The gate mechanism is real and tested
-    # (eval.threshold_breaches); only the golden data is pending.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -61,19 +57,16 @@ jobs:
         run: poetry install -E embeddings
 
       - name: Run the map-mode regression gate (free — anchors only, no LLM)
-        # GH_TOKEN lets `diff_github` fetch each golden case's diff via the API.
-        # --min-recall makes a mapping-recall regression exit non-zero. Skips cleanly
-        # until the self-docs golden set lands so the workflow stays green meanwhile.
+        # The golden set is self-docs (repo key 'docsync'), so GITHUB_TOKEN — which can
+        # read THIS repo — is enough for `diff_github` to fetch each case's diff.
+        # --min-recall 1.0: every page a real change edited must still be anchored;
+        # mapping recall is the safety property. map-mode precision is intentionally low
+        # (it over-selects, see eval.py), so it is NOT gated here. If a deliberate
+        # manifest change narrows an anchor, update the golden set in the same PR.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          GOLDEN=tests/eval/golden_selfdocs.json
-          if [ -f "$GOLDEN" ]; then
-            poetry run docsync eval \
-              --docs-repo . --golden "$GOLDEN" --mode map --min-recall 0.80
-          else
-            echo "No self-docs golden set yet ($GOLDEN) — skipping the eval gate."
-            echo "Curate one (docsync's own commits → the docs/ pages they should touch)"
-            echo "to turn mapping recall into a hard CI gate. See tests/eval/golden.json"
-            echo "for the schema; expected_pages are EDIT-stage expectations (eval.py)."
-          fi
+          poetry run docsync eval \
+            --docs-repo . \
+            --golden tests/eval/golden_selfdocs.json \
+            --mode map --min-recall 1.0
