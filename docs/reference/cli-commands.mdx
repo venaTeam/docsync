@@ -1,6 +1,6 @@
 ---
 title: CLI Commands Reference
-description: Complete reference for the docsync command-line interface — run, map, index, init, doctor, eval, and bootstrap — including the full set of flags for the run pipeline.
+description: Complete reference for the docsync command-line interface — run, map, index, init, doctor, eval, bootstrap, and explain — including the full set of flags for the run pipeline.
 ---
 
 The docsync CLI is the engine that keeps documentation in sync with code changes. It is dogfooded locally and wrapped by `action.yml` in CI. The command-line app is defined in `docsync/src/docsync/cli.py` as a [Typer](https://typer.tiangolo.com/) application:
@@ -37,6 +37,9 @@ Shell completion is disabled (`add_completion=False`). Invoke commands as `docsy
   <Card title="eval" icon="flask">
     Evaluation harness for docsync output.
   </Card>
+  <Card title="explain" icon="circle-info">
+    Print the config + manifest schema — every field, its type, default, and meaning.
+  </Card>
 </CardGroup>
 
 ---
@@ -54,7 +57,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--docs-repo` | `Path` | **required** | Path to the docs repo checkout. |
-| `--src-repo` | `str` | `None` | Service repo: a local path or a GitHub `owner/name`. Omit when using `--from-event`. |
+| `--src-repo` | `str` | `None` | Service repo: a local path or a GitHub `owner/name`. Omit when using `--from-event`. In a mono repo (docs + code in one checkout, `repo_mode: auto`/`mono`), an explicit local run with `--base`/`--head` defaults `--src-repo` to `--docs-repo`. |
 | `--base` | `str` | `None` | Base ref/sha (before). Omit with `--from-event`. With an explicit `--src-repo` + `--head` but no `--base`, docsync falls back to the stored cursor (last synced head) for that repo. |
 | `--head` | `str` | `None` | Head ref/sha (after). Omit with `--from-event`. |
 | `--from-event` | `Path` | `None` | GitHub event JSON (the CI `$GITHUB_EVENT_PATH`): derive repo/base/head/PR automatically. When no flags are given, the CI platform is auto-detected — GitLab via `$GITLAB_CI` (the `CI_*` env vars) or GitHub via `$GITHUB_EVENT_PATH`. |
@@ -68,6 +71,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
 | `--polish` / `--no-polish` | `bool` | `None` | Readability pass: after each edit, run a fact-frozen pass that revises the page for a leading summary + scannable structure (adds an edit-model call per page and a larger diff). Overrides `config.readability_pass`. |
 | `--min-confidence` | `float` | `None` | Skip the edit stage for pages below this impact confidence (0–1). Overrides `config.min_edit_confidence`; use for a conservative first rollout. |
 | `--max-pages` | `int` | `None` | Cap pages sent to the edit stage (highest-confidence first; the rest are reported, not edited). Overrides `config.max_pages_per_run`. |
+| `--thoroughness` | `str` | `None` | Generation thoroughness: `light` \| `medium` \| `high`. Controls edit depth and the diff-size budget. Overrides `config.thoroughness`. |
 | `--max-parallel` | `int` | `None` | Max concurrent LLM requests for the judge + edit stages. Overrides `config.max_parallel_requests`. |
 | `--preflight` / `--no-preflight` | `bool` | `True` | Pre-flight the manifest (doctor) and abort before any LLM spend if it references doc pages that don't exist. `--no-preflight` to bypass. |
 | `--report-path` | `Path` | `None` | Write the PR-body markdown here. |
@@ -111,7 +115,7 @@ If none of those conditions are met, the command raises a `BadParameter` error:
 | Code | When |
 |------|------|
 | `0` | No validated changes to open, the change was already processed, or it was a dry run with nothing applied. |
-| `2` | Preflight failed — the manifest references one or more missing doc pages. |
+| `2` | Preflight failed — the manifest references one or more missing doc pages; or `.docsync/config.yml` is invalid (an unknown key or a bad value); or the manifest is missing (run `docsync init` first). |
 
 <Tabs>
   <Tab title="Dry run (default)">
@@ -190,7 +194,7 @@ If `doctor` flags missing pages, fix `.docsync/manifest.yml` (or restore the pag
 
 ## `docsync init`
 
-Scaffolds docsync configuration into a docs repo so the manifest and config files are in place for subsequent `map` / `run` invocations.
+Scaffolds docsync configuration into a docs repo so the manifest and config files are in place for subsequent `map` / `run` invocations. With `--minimal` (or `--infer`) it auto-detects `docs_root`, the adapter, and `repo_mode` (mono/single/poly), and prints a numbered next-steps path. Add `--infer --src-repo name=path` to chain straight into inference and land a populated, doctor-clean manifest in one command.
 
 ---
 
@@ -199,6 +203,20 @@ Scaffolds docsync configuration into a docs repo so the manifest and config file
 Bootstrap helpers (backed by the `bootstrap` module) for standing up docsync in a repository.
 
 Pass `--polish` / `--no-polish` to toggle the readability pass: after authoring each page, run a fact-frozen pass that revises it for a leading summary + scannable structure (adds an edit-model call per page). Overrides `config.readability_pass`.
+
+Pass `--thoroughness` (`light` \| `medium` \| `high`) to control how many pages the planner targets and how deep each authored page goes. Overrides `config.thoroughness`.
+
+---
+
+## `docsync explain`
+
+The canonical reference for docsync configuration: prints every `.docsync/config.yml` field with its type, default, and meaning (so you don't have to read `models.py`).
+
+| Invocation | Shows |
+|------------|-------|
+| `docsync explain` | Every config field (all optional), with type, default, and description. |
+| `docsync explain <field>` | A single config field (errors with the valid field list on an unknown name). |
+| `docsync explain manifest` | The manifest schema — `ManifestPage` and `ManifestSource` fields. |
 
 ---
 
