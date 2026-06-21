@@ -212,7 +212,7 @@ It then writes the changes (`pipeline.write_changes`), advances the cursor, and 
 
 <Tabs>
 <Tab title="--open-pr">
-`pr.open_pr` branches, commits, pushes, and opens a docs PR — with a generated title (`docs: sync with <repo> #<pr>`), the markdown report as the body, and `reviewers` / `pr_labels` from config.
+`pr.open_pr` branches, commits, pushes, and opens a docs **PR (GitHub, via `gh`)** or **MR (GitLab, via `glab`)** — with a generated title (`docs: sync with <repo> #<pr>`), the markdown report as the body, and `reviewers` / `pr_labels` from config. The host is chosen by `config.forge` (`auto | github | gitlab`); `auto` detects it from the docs repo's `origin` remote (URLs containing `gitlab` → GitLab, else GitHub). On a re-run, an open PR/MR on the same branch is updated in place rather than duplicated.
 </Tab>
 <Tab title="default (patch)">
 Without `--open-pr`, `pr.write_patch` writes `docsync.patch` to the docs repo so the change can be inspected or applied manually.

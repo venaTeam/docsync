@@ -10,7 +10,7 @@ docsync runs as a single CLI (`docsync`) that maps a code diff to impacted docum
     `docsync run` auto-detects `$GITHUB_EVENT_PATH` and derives the repo, base, head, and PR from the event — the core "triggered by commits, not many parameters" goal.
   </Card>
   <Card title="Dry-run first, PR later" icon="shield-check">
-    Runs are dry by default: compute and report only. Add `--open-pr` once you trust the output to branch, commit, push, and open a docs PR via `gh`.
+    Runs are dry by default: compute and report only. Add `--open-pr` once you trust the output to branch, commit, push, and open a docs PR (GitHub, via `gh`) or MR (GitLab, via `glab`). The host is chosen by `config.forge`.
   </Card>
 </CardGroup>
 
@@ -20,7 +20,7 @@ A CI run is one invocation of `docsync run` against a **checkout of your docs re
 
 1. Check out the docs repo (it must be a real git checkout for PR/patch output).
 2. Make the service repo's diff available — in GitHub Actions this is just the event JSON; elsewhere you pass refs explicitly.
-3. Provide credentials: an LLM backend key, and (for `--open-pr`) a `gh`-authenticated token.
+3. Provide credentials: an LLM backend key, and (for `--open-pr`) an authenticated host CLI — `gh` for GitHub or `glab` for GitLab.
 
 <Note>
 docsync is dogfooded as the `docsync` CLI and wrapped by an `action.yml`. The examples below call the CLI directly so the behavior is identical across GitHub Actions, GitLab CI, and any other runner.
@@ -45,8 +45,8 @@ docsync is dogfooded as the `docsync` CLI and wrapped by an `action.yml`. The ex
   <Step title="Provide a `.docsync` manifest">
     The docs repo must contain `.docsync/manifest.yml` mapping code anchors to doc pages. The pre-flight gate (below) checks it before any LLM spend.
   </Step>
-  <Step title="Authenticate `gh` (only for `--open-pr`)">
-    PR creation shells out to the GitHub CLI (`gh`). Make sure `gh` is installed and authenticated (e.g. via `GH_TOKEN`/`GITHUB_TOKEN`) on the runner. Without it, docsync falls back to returning the branch name instead of a PR URL.
+  <Step title="Authenticate the host CLI (only for `--open-pr`)">
+    Review-request creation shells out to a host CLI: the GitHub CLI (`gh`) for a PR, or the GitLab CLI (`glab`) for an MR. The host is picked by `config.forge` — `auto` (default) detects it from the docs repo's `origin` remote (URLs containing `gitlab` → gitlab, else github); set `forge: gitlab` explicitly for a self-managed GitLab on an opaque hostname. Make sure the chosen CLI is installed and authenticated (e.g. via `GH_TOKEN`/`GITHUB_TOKEN`, or a `glab`-authenticated token) on the runner. Without it, docsync falls back to returning the branch name instead of a PR/MR URL.
   </Step>
 </Steps>
 
@@ -137,7 +137,7 @@ Because no `--src-repo/--base/--head` flags are passed and `$GITHUB_EVENT_PATH` 
 
 ## GitLab CI and other systems
 
-Outside GitHub Actions there is no `$GITHUB_EVENT_PATH`, so pass the diff explicitly with `--src-repo`, `--base`, and `--head`. Point `--src-repo` at a GitHub `owner/name` (or a local checkout path) and use the CI-provided commit SHAs.
+Outside GitHub Actions there is no `$GITHUB_EVENT_PATH`, so pass the diff explicitly with `--src-repo`, `--base`, and `--head`. Point `--src-repo` at a GitHub `owner/name` (or a local checkout path) and use the CI-provided commit SHAs. On GitLab, `--open-pr` opens a native MR via `glab` — set `forge: gitlab` (or rely on `auto` detecting a `gitlab` origin remote) and authenticate `glab` on the runner.
 
 ```yaml
 docsync:
@@ -201,10 +201,10 @@ What a run produces:
 - A **console summary** of the outcome, always printed.
 - A **PR-body markdown** report, written to `--report-path` when provided.
 - In dry-run mode, a **`docsync.patch`** in the docs repo (skipped without error if the docs repo isn't a git checkout).
-- In `--open-pr` mode, a **docs PR** on branch `docsync/<service-slug>-<head_sha[:8]>`, with any configured reviewers and labels. Re-running on the same head force-pushes and **updates the existing PR in place** rather than opening a duplicate.
+- In `--open-pr` mode, a **docs PR (GitHub) or MR (GitLab)** on branch `docsync/<service-slug>-<head_sha[:8]>`, with any configured reviewers and labels. Re-running on the same head force-pushes and **updates the existing PR/MR in place** rather than opening a duplicate.
 
 <Warning>
-PR creation depends on `gh` being installed and authenticated. If `gh` or the push is unavailable, docsync does not crash — it returns the branch name (and the `gh` error) instead of a PR URL, so check the command output in your CI logs.
+Review-request creation depends on the host CLI (`gh` for GitHub, `glab` for GitLab) being installed and authenticated. If the host CLI or the push is unavailable, docsync does not crash — it returns the branch name (and the CLI error) instead of a PR/MR URL, so check the command output in your CI logs.
 </Warning>
 
 ## Cheaper inspection commands

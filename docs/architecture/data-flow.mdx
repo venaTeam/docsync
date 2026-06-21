@@ -16,7 +16,7 @@ There are actually two pipelines that share this shape:
   </Card>
 </CardGroup>
 
-Both converge on the same final step: write files to a docs checkout and open a PR via `pr.open_pr`.
+Both converge on the same final step: write files to a docs checkout and open a PR (GitHub) or MR (GitLab) via `pr.open_pr`.
 
 <Note>
 The two pipelines differ mainly in their *input* and how they *find* pages. Bootstrap ingests from a snapshot and plans an information architecture; the update pipeline ingests a diff and maps it to pages that already exist. Once content exists in memory, validation and the Git sync work the same way.
@@ -238,7 +238,7 @@ Both pipelines end in `pr.py`, which treats the docs repo as a real git checkout
     ```
   </Tab>
   <Tab title="--open-pr — branch, commit, push, PR">
-    `open_pr` checks out a deterministic branch, stages the changed `paths` plus the advanced cursor (`.docsync/state/cursors.json`), commits, force-pushes with lease, and opens a PR via `gh`.
+    `open_pr` checks out a deterministic branch, stages the changed `paths` plus the advanced cursor (`.docsync/state/cursors.json`), commits, force-pushes with lease, and opens a review request on the host selected by `config.forge`: a GitHub PR via `gh`, or a GitLab MR via `glab`. `forge` is `auto` | `github` | `gitlab` (default `auto`, which detects the host from the docs repo's `origin` remote — URLs containing `gitlab` → gitlab, else github; set it explicitly for a self-managed GitLab on an opaque hostname).
 
     ```python
     repo = Path(docs_repo)
@@ -253,7 +253,7 @@ Both pipelines end in `pr.py`, which treats the docs repo as a real git checkout
 
 ### Deterministic branches and idempotent re-runs
 
-The branch name comes from `branch_name(repo, head_sha)` — `docsync/<repo-slug>-<sha8>` — so a re-run on the same head SHA targets the *same branch*. That determinism is what makes re-runs idempotent: the force-push refreshes the existing PR's diff, and `_existing_pr_url` finds the open PR by head branch so docsync **updates it in place** instead of erroring on a duplicate `gh pr create`.
+The branch name comes from `branch_name(repo, head_sha)` — `docsync/<repo-slug>-<sha8>` — so a re-run on the same head SHA targets the *same branch*. That determinism is what makes re-runs idempotent: the force-push refreshes the existing PR's diff, and `_existing_pr_url` finds the open PR by head branch so docsync **updates it in place** instead of erroring on a duplicate `gh pr create`. The GitLab path mirrors this with `_existing_mr_url` and `glab mr create`, deduping an open MR on the source branch before creating one.
 
 ```python
 _git(repo, "push", "-u", "origin", branch, "--force-with-lease")
@@ -264,7 +264,7 @@ if existing:
     return existing
 ```
 
-Robustness is the throughline here. Labels are created best-effort via `_ensure_labels` (a label that already exists exits non-zero from `gh`, which is ignored — labels are a convenience, never a blocker). If the post-push `gh pr create` still fails, `open_pr` re-checks for an existing PR (it may have lost a race to a concurrent run) and otherwise returns the branch name with the error surfaced. And if `gh` is missing or push is disabled, it returns the branch name rather than raising.
+Robustness is the throughline here. On the GitHub path, labels are created best-effort via `_ensure_labels` (a label that already exists exits non-zero from `gh`, which is ignored — labels are a convenience, never a blocker); the GitLab path skips this pre-create entirely because `glab` creates unknown labels on apply. If the post-push `gh pr create` still fails, `open_pr` re-checks for an existing PR (it may have lost a race to a concurrent run) and otherwise returns the branch name with the error surfaced. And if `gh` is missing or push is disabled, it returns the branch name rather than raising.
 
 <Note>
 `open_pr` assumes the changed files are **already written to the working tree** — it never authors content itself. This keeps the separation clean: the pipelines decide *what* the docs should say, the CLI decides *whether* to write and open a PR, and `pr.py` only does the Git mechanics.
@@ -278,6 +278,6 @@ The same discipline runs through every stage of both pipelines:
 - **Cheap first, expensive last.** Lightweight digests and impact mapping run before any per-page LLM authoring; confidence floors and page caps gate what reaches the costly edit/author stage.
 - **Pure cores, side effects at the edges.** `run` and `plan_docs` produce data structures and perform no git I/O; only the CLI writes files and only `pr.py` touches git.
 - **Everything metered.** Every LLM call flows through the injected `MeteredClient`, so token usage and estimated cost land on the result.
-- **Failures isolated.** A bad page, an unreadable file, a failed critique, or a missing `gh` is recorded and skipped — never allowed to abort the run.
+- **Failures isolated.** A bad page, an unreadable file, a failed critique, or a missing host CLI (`gh`/`glab`) is recorded and skipped — never allowed to abort the run.
 
 The net effect: code changes flow in as diffs or snapshots, and validated documentation flows out as reviewable, idempotent pull requests.
