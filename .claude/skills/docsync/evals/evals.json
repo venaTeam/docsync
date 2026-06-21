@@ -1,0 +1,35 @@
+{
+  "skill_name": "docsync",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "We just split our app into three services — keep-api, keep-worker, and keep-ui — each in its own repo, and we have an empty docs repo. I want to get docsync set up and author an initial documentation site from the code. Walk me through it.",
+      "expected_output": "Greenfield onboarding: init --minimal --detect, bootstrap with repeated --src-repo name=path, DRY-RUN first, then --no-dry-run, then doctor. Dry-run discipline + never auto-merge.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "Our security team won't let the docs CI box reach the public internet. We have an internal Artifactory PyPI mirror and an internal Anthropic-compatible LLM gateway. How do I run docsync there, embeddings included, without it phoning home?",
+      "expected_output": "Air-gapped runbook: mirror deps incl embeddings extra + build wheel, ANTHROPIC_BASE_URL + key (api backend, no code change), local embedding_model path + HF offline flags, verify zero egress.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "A PR just merged in keep-api that reworked the alerts route and renamed a couple of handlers. Can you sync our docs to match?",
+      "expected_output": "run flow: map first, run --dry-run, then apply; rename -> update manifest symbols + doctor; never hand-edit mdx; never auto-merge.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Our docs CI runs in GitLab (self-managed, air-gapped). I want docsync to run in a merge-request pipeline and open the docs MR automatically. How do I wire that up?",
+      "expected_output": "GitLab CI auto-detects the diff from GITLAB_CI + CI_* vars (no --from-event). CRUCIAL: --open-pr is GitHub-only and will NOT open a GitLab MR; instead open the MR via git push options (-o merge_request.create), glab mr create, or the GitLab MR API with $CI_JOB_TOKEN. Keep dry-run-first and human-review-the-MR norms.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "In our GitLab merge-request pipeline, how does docsync figure out which base and head commits to diff? Do I need to pass it the GitHub-style --from-event file?",
+      "expected_output": "On GitLab, docsync auto-detects from CI_* env vars (CI_MERGE_REQUEST_DIFF_BASE_SHA = base, CI_MERGE_REQUEST_SOURCE_BRANCH_SHA = head, CI_PROJECT_PATH, CI_MERGE_REQUEST_IID). --from-event is the GitHub event-JSON path, NOT for GitLab. For a manual run, pass the MR base/head SHAs explicitly.",
+      "files": []
+    }
+  ]
+}
