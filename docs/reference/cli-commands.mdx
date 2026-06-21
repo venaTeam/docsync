@@ -64,7 +64,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
 | `--pr-number` | `int` | `None` | PR number associated with the change. |
 | `--pr-title` | `str` | `None` | PR title associated with the change. |
 | `--dry-run` / `--no-dry-run` | `bool` | `True` | Compute + report only; do not write or open a PR. |
-| `--open-pr` / `--no-open-pr` | `bool` | `False` | Branch, commit, push, and open a docs PR. |
+| `--open-pr` / `--no-open-pr` | `bool` | `False` | Branch, commit, push, and open a docs PR (GitHub) or MR (GitLab); see `config.forge`. |
 | `--use-embeddings` / `--no-use-embeddings` | `bool` | `True` | Embeddings recall-net: also surface drift on pages the manifest doesn't anchor. Degrades to anchors-only if the embeddings extra isn't installed. |
 | `--check-links` / `--no-check-links` | `bool` | `False` | Run the active adapter's broken-link soft gate (no-op for adapters without a link checker, e.g. plain markdown). |
 | `--self-critique` / `--no-self-critique` | `bool` | `False` | Adversarially re-check each generated edit against the diff (adds a judge-model call per page) and drop edits not justified by the change. |
@@ -130,7 +130,7 @@ If none of those conditions are met, the command raises a `BadParameter` error:
     ```bash
     docsync run --docs-repo ./docs --from-event "$GITHUB_EVENT_PATH" --no-dry-run --open-pr
     ```
-    Writes the validated pages, advances the processing cursor, then branches, commits, pushes, and opens a docs PR titled `docs: sync with <repo>` (with the PR number appended when known). Reviewers and labels come from `config.reviewers` and `config.pr_labels`.
+    Writes the validated pages, advances the processing cursor, then branches, commits, pushes, and opens a docs review request titled `docs: sync with <repo>` (with the PR number appended when known). The host is chosen by `config.forge`: `github` opens a PR via the `gh` CLI, `gitlab` an MR via the `glab` CLI, and `auto` (the default) detects it from the docs repo's `origin` remote (URLs containing `gitlab` → GitLab, else GitHub). Reviewers and labels come from `config.reviewers` and `config.pr_labels`.
   </Tab>
   <Tab title="Write a patch">
     ```bash
