@@ -77,6 +77,7 @@ All optional; defaults shown.
 | `docs_root` | `.` | Root of the docs tree, relative to the docs repo (e.g. `docs`). |
 | `repo_mode` | `auto` | `mono`/`single`/`poly`; auto-detects from checkout + manifest. |
 | `adapter` | `mintlify` | `mintlify` (.mdx + docs.json nav) or `markdown` (plain .md). |
+| `forge` | `auto` | Host for `--open-pr`: `github` (PR via `gh`) or `gitlab` (MR via `glab`). `auto` detects from the origin remote; set `gitlab` for self-managed GitLab on an opaque host. |
 | `thoroughness` | `medium` | `light`/`medium`/`high` — how much content to write. |
 | `thoroughness_by_kind` | `{}` | Per-kind override (reference/concept/guide). |
 | `ingest_exclude_dirs` | `[]` | Extra dir names to prune on ingest (skip non-product noise). |
@@ -100,7 +101,7 @@ All optional; defaults shown.
 - `--checkout name=path` — repeatable; `doctor`'s equivalent for validating against real code.
 - `--dry-run` / `--no-dry-run` — `run`/`bootstrap`/`infer` default to dry-run.
 - `--plan-only` — `bootstrap`: produce the IA plan without authoring pages.
-- `--open-pr` — open a PR (needs `gh` configured for your git host); off until you wire hosting.
+- `--open-pr` — open the review request: a GitHub PR (`gh`) or GitLab MR (`glab`), per `config.forge`. Needs the host CLI on the runner; off until you wire hosting.
 - `--backend api|claude-code` — see SKILL.md "Backends and models".
 - `--self-critique` / `--no-self-critique`, `--polish`, `--thoroughness light|medium|high`.
 - `--min-confidence`, `--max-pages`, `--max-parallel` — per-run overrides of the config dials.
