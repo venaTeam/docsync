@@ -1,0 +1,72 @@
+# .gitlab-ci.yml — air-gapped docsync, lives in the SERVICE (code) repo.
+#
+# On every merge-request pipeline it diffs the MR, syncs the affected pages in a SEPARATE
+# docs repo, and opens a native GitLab MR there. Tuned for an air-gapped self-managed
+# GitLab + internal Anthropic gateway + Artifactory PyPI mirror.
+#
+# Two air-gapped specifics baked in (both verified against docsync's source):
+#   1. Diff is taken LOCALLY (--src-repo "<name>=$CI_PROJECT_DIR") so it routes through
+#      diff_local (offline `git diff`) instead of diff_github (gh api -> github.com).
+#   2. The docs MR is opened natively via `glab` because the docs repo's
+#      .docsync/config.yml sets `forge: gitlab`.
+#
+# Prerequisites (see operator-checklist.md):
+#   - A runner image with: docsync (+embeddings) from Artifactory, git, and `glab`.
+#   - Masked CI/CD variables: ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, DOCS_BOT_TOKEN,
+#     DOCS_REPO_URL (e.g. gitlab.internal.example/team/docs.git), and DOCS_DEFAULT_BRANCH.
+#   - The docs repo contains .docsync/ with manifest anchors for THIS service repo and
+#     `forge: gitlab` in config.yml.
+
+stages: [docsync]
+
+docsync:
+  stage: docsync
+  image: $DOCSYNC_RUNNER_IMAGE        # e.g. registry.internal.example/docsync-runner:py311
+  rules:
+    # MR pipelines only — that's when the CI_MERGE_REQUEST_* vars are populated.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  variables:
+    GIT_DEPTH: "0"                     # full history so base..head resolve for the local diff
+    # Offline / gateway env — set as masked CI/CD variables or bake into the runner image:
+    #   ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY     -> the internal Anthropic gateway
+    #   HF_HUB_OFFLINE: "1"                        -> never reach huggingface.co
+    #   TRANSFORMERS_OFFLINE: "1"
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+  before_script:
+    # Clone the DOCS repo (a separate project) with a bot token that can push + open MRs there.
+    - git clone "https://oauth2:${DOCS_BOT_TOKEN}@${DOCS_REPO_URL}" /tmp/docs
+    - git -C /tmp/docs config user.email "docsync-bot@${CI_SERVER_HOST}"
+    - git -C /tmp/docs config user.name  "docsync bot"
+    # glab auth for native --open-pr against the internal GitLab (forge: gitlab in docs config).
+    - export GITLAB_HOST="$CI_SERVER_URL"
+    - export GITLAB_TOKEN="$DOCS_BOT_TOKEN"
+  script:
+    # diff_local (offline) + native GitLab MR. base = MR merge-base, head = real source tip.
+    - >
+      docsync run
+      --docs-repo /tmp/docs
+      --src-repo "${CI_PROJECT_NAME}=${CI_PROJECT_DIR}"
+      --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA"
+      --head "$CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"
+      --pr-number "$CI_MERGE_REQUEST_IID"
+      --pr-title "$CI_MERGE_REQUEST_TITLE"
+      --backend api
+      --report-path /tmp/docs/docsync-report.md
+      --no-dry-run
+      --open-pr
+  # A docs-sync hiccup must never block the code MR. The docs MR is human-reviewed regardless.
+  allow_failure: true
+  artifacts:
+    when: always
+    paths: [/tmp/docs/docsync-report.md]
+    expire_in: 1 week
+
+# --- Fallback: if you'd rather NOT ship `glab` in the runner ----------------------------
+# Drop `--open-pr` above (docsync writes the edits + a patch), then open the MR yourself:
+#   git -C /tmp/docs checkout -B "docsync/${CI_PROJECT_NAME}-${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:0:8}"
+#   git -C /tmp/docs add -A && git -C /tmp/docs commit -F /tmp/docs/docsync-report.md
+#   git -C /tmp/docs push -f -o merge_request.create \
+#       -o merge_request.target="$DOCS_DEFAULT_BRANCH" \
+#       -o merge_request.title="docs: sync with ${CI_PROJECT_PATH} !${CI_MERGE_REQUEST_IID}" \
+#       origin HEAD
