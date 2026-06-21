@@ -5,6 +5,9 @@ description = "Keep documentation in sync with code: ingest merged-PR diffs and 
 authors = ["Yarin Shitrit <yshitrit123@gmail.com>"]
 readme = "README.md"
 packages = [{ include = "docsync", from = "src" }]
+# Ship a vendored copy of the embedding model when present (populated by
+# scripts/vendor_model.py) so an air-gapped wheel loads it offline — no HF mirror needed.
+include = [{ path = "src/docsync/_models/**/*", format = ["sdist", "wheel"] }]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"

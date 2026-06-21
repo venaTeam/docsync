@@ -30,6 +30,11 @@ if TYPE_CHECKING:
 
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
+# A copy of the default model can be vendored into the package (…/docsync/_models/<name>)
+# so an air-gapped install loads it locally with no HuggingFace call. Populated by
+# `scripts/vendor_model.py` and shipped in the wheel; absent in a lean dev checkout.
+_MODELS_DIR = Path(__file__).resolve().parent / "_models"
+
 # An encoder turns a list of texts into a 2-D float array (n_texts, dim).
 Encoder = Callable[[list[str]], "np.ndarray"]
 
@@ -106,15 +111,45 @@ def chunks_content_hash(chunks: list[tuple[str, str]], model_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def bundled_model_dir(model_id: str = DEFAULT_MODEL) -> Path | None:
+    """Path to a copy of `model_id` vendored inside the package, or None if not shipped.
+
+    Looks for `…/docsync/_models/<basename>` containing a `config.json` (the marker of a
+    real sentence-transformers checkout). Present only when the wheel was built with the
+    model vendored in — see `scripts/vendor_model.py`.
+    """
+    base = _MODELS_DIR / model_id.split("/")[-1]
+    return base if (base / "config.json").exists() else None
+
+
+def resolve_model_source(model_name: str) -> str:
+    """Map a model name to what `SentenceTransformer(...)` should actually load.
+
+    An explicit local path or a non-default id is returned unchanged. The default HF id
+    resolves to the **bundled** copy when one ships with the package — so an air-gapped
+    wheel loads the model locally with zero config and no HuggingFace call, while an
+    online/dev install (no bundled model) still resolves the id over the network.
+    """
+    if Path(model_name).exists():  # already a local path the user pointed at
+        return model_name
+    if model_name == DEFAULT_MODEL:
+        bundled = bundled_model_dir(DEFAULT_MODEL)
+        if bundled is not None:
+            return str(bundled)
+    return model_name
+
+
 def default_encoder(model_name: str = DEFAULT_MODEL) -> Encoder:
     """Lazily build the production sentence-transformers encoder.
 
-    Raises ImportError if the optional `embeddings` extra isn't installed — callers
-    treat that as "recall-net unavailable" and degrade to anchors only.
+    Loads the bundled offline model when one ships with the package (see
+    `resolve_model_source`); otherwise resolves `model_name` as usual. Raises ImportError
+    if the optional `embeddings` extra isn't installed — callers treat that as "recall-net
+    unavailable" and degrade to anchors only.
     """
     from sentence_transformers import SentenceTransformer  # optional extra
 
-    model = SentenceTransformer(model_name)
+    model = SentenceTransformer(resolve_model_source(model_name))
 
     def _encode(texts: list[str]) -> np.ndarray:
         return np.asarray(model.encode(list(texts)), dtype=np.float32)

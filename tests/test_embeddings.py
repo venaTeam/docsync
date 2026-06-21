@@ -354,3 +354,45 @@ def test_code_units_content_hash_excludes_excerpt(tmp_path: Path):
     keys2 = [(digest2.repo, u.path) for u in digest2.units]
     syms2 = [list(u.symbols) for u in digest2.units]
     assert emb.code_units_content_hash(keys2, syms2, emb.DEFAULT_MODEL) == h1
+
+
+# --- Bundled offline model resolution (air-gapped, no HuggingFace) -----------------
+
+
+def _vendor_fake_model(models_dir: Path, model_id: str = emb.DEFAULT_MODEL) -> Path:
+    """Create a minimal stand-in for a vendored sentence-transformers checkout."""
+    d = models_dir / model_id.split("/")[-1]
+    d.mkdir(parents=True)
+    (d / "config.json").write_text("{}", encoding="utf-8")
+    return d
+
+
+def test_bundled_model_dir_found_when_vendored(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(emb, "_MODELS_DIR", tmp_path)
+    assert emb.bundled_model_dir() is None  # nothing vendored yet
+    vendored = _vendor_fake_model(tmp_path)
+    assert emb.bundled_model_dir() == vendored
+
+
+def test_resolve_model_source_prefers_bundled_default(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(emb, "_MODELS_DIR", tmp_path)
+    # No bundled copy -> the HF id is returned unchanged (online/dev resolves it).
+    assert emb.resolve_model_source(emb.DEFAULT_MODEL) == emb.DEFAULT_MODEL
+    # Vendored copy present -> resolve to the local path (offline, no HF call).
+    vendored = _vendor_fake_model(tmp_path)
+    assert emb.resolve_model_source(emb.DEFAULT_MODEL) == str(vendored)
+
+
+def test_resolve_model_source_honors_explicit_path(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(emb, "_MODELS_DIR", tmp_path)
+    _vendor_fake_model(tmp_path)  # bundled default exists...
+    custom = tmp_path / "my-own-model"
+    custom.mkdir()
+    # ...but an explicit local path the user configured wins and is returned as-is.
+    assert emb.resolve_model_source(str(custom)) == str(custom)
+
+
+def test_resolve_model_source_passes_through_unknown_id(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(emb, "_MODELS_DIR", tmp_path)
+    _vendor_fake_model(tmp_path)  # only the DEFAULT_MODEL is vendored
+    assert emb.resolve_model_source("some/other-model") == "some/other-model"

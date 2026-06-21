@@ -1,0 +1,6 @@
+# Vendored embedding-model weights are large binaries — track with git-lfs so the repo
+# stays clonable. (Committing them is optional; see src/docsync/_models/README.md.)
+src/docsync/_models/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
+src/docsync/_models/**/*.bin filter=lfs diff=lfs merge=lfs -text
+src/docsync/_models/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+src/docsync/_models/**/*.model filter=lfs diff=lfs merge=lfs -text
