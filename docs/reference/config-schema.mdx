@@ -47,6 +47,9 @@ The fields below mirror the starter file emitted by `_config_template()` in `sca
 | `models` | mapping | see [below](#the-models-block) | LLM model + effort selection for the judge and edit stages. |
 | `docs_root` | string | `"."` | Root of the docs tree, relative to the repo, where page paths resolve. |
 | `adapter` | string | `"mintlify"` | Doc-framework adapter that owns the pages — `"mintlify"` (`.mdx` + MDX components, `docs.json` nav) or `"markdown"` (plain `.md`, YAML frontmatter, no nav manifest). Drives frontmatter freeze, structural integrity, link checks, and the new-page extension. |
+| `repo_mode` | string | `"auto"` | Repository topology — `auto` (detect from checkout + manifest), `mono` (docs+code in one checkout; the docs subtree is filtered out of the diff), `single` (one code repo + separate docs repo), or `poly` (many code repos + one docs repo). |
+| `thoroughness` | string | `"medium"` | Generation thoroughness — `light` (most important surface only), `medium` (balanced), or `high` (exhaustive). Controls how much content is written and edit depth. |
+| `thoroughness_by_kind` | mapping | `{}` | Per-page-kind overrides for `thoroughness`, keyed by PageKind (`reference` \| `concept` \| `guide`). Applies where a kind is known (bootstrap authoring). |
 | `self_critique` | boolean | `true` | Adversarial self-critique: a judge-model pass drops any edit op not justified by the diff. On by default; the CLI `--no-self-critique` flag turns it off. |
 | `reviewers` | list of strings | `[]` | GitHub handles requested as reviewers on opened doc-update PRs. |
 | `pr_labels` | list of strings | `[docsync]` | Labels applied to opened docs PRs (auto-created in the repo if missing). |
@@ -80,6 +83,10 @@ models:
   edit_effort: <edit_effort default>
 # Root of the docs tree, relative to this repo (where page paths resolve).
 docs_root: "."
+# Repository topology: auto | mono | single | poly (auto-detected by default).
+repo_mode: auto
+# Generation thoroughness: light | medium | high.
+thoroughness: medium
 # GitHub handles requested as reviewers on opened doc-update PRs.
 reviewers: []
 # Labels applied to opened docs PRs (auto-created in this repo if missing).
@@ -128,12 +135,19 @@ def _config_template() -> str:
 
 ```python
 def load_config(docs_repo: Path) -> DocsyncConfig:
-    """Load .docsync/config.yml; return defaults if it's absent."""
+    """Load .docsync/config.yml; return defaults if it's absent.
+
+    Raises ConfigError (with the offending field) on an unknown key or a
+    bad value, rather than leaking a raw Pydantic traceback.
+    """
     path = docsync_dir(docs_repo) / CONFIG_FILE
     if not path.exists():
         return DocsyncConfig()
     data = _yaml.load(path.read_text()) or {}
-    return DocsyncConfig.model_validate(data)
+    try:
+        return DocsyncConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(_format_config_error(path, exc)) from exc
 ```
 
 | Aspect | Behavior |
@@ -142,8 +156,12 @@ def load_config(docs_repo: Path) -> DocsyncConfig:
 | **Returns** | A validated `DocsyncConfig`. |
 | **Missing file** | Returns `DocsyncConfig()` (all defaults) — never raises. |
 | **Empty file** | A file that parses to nothing is treated as `{}`, so all defaults apply. |
-| **Validation** | Parsed data is passed through `DocsyncConfig.model_validate`, so unknown or malformed values are rejected by the model. |
+| **Validation** | Parsed data is passed through `DocsyncConfig.model_validate`. The model is `extra="forbid"`, so an unknown key (e.g. a typo'd field) or a bad value raises `ConfigError` with the offending field — it is never silently ignored. |
 | **YAML mode** | Parsed with a safe `ruamel.yaml` loader (`YAML(typ="safe")`), which strips comments. |
+
+<Tip>
+Run `docsync explain` to list every config field with its type, default, and meaning, `docsync explain <field>` for one field, or `docsync explain manifest` for the manifest schema.
+</Tip>
 
 <Note>
 Unlike `load_config`, the manifest loader (`load_manifest`) raises `FileNotFoundError` when its file is missing — a docsync-enabled repo must have a manifest, but a config file is genuinely optional.

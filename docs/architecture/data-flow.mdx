@@ -45,6 +45,10 @@ flowchart TD
 
 The CLI handles event capture (Stage 1) and diff extraction (Stage 2) *before* calling into the pipeline, and PR creation (Stage 6) *after*. The `run` function is the pure core in between — given a diff, manifest, and config, it produces a `PipelineResult` and performs **no git side effects** of its own.
 
+<Note>
+In a **mono repo** (docs and code in one checkout) the extracted diff also carries the docs subtree. Before impact mapping, the CLI resolves the topology with `config.resolve_repo_mode` and, when it's `mono`, runs `impact.filter_docs_paths` to drop files under `docs_root` — otherwise a merged doc change would map onto itself and drive further edits. `config.repo_mode` (`auto` | `mono` | `single` | `poly`) pins or auto-detects this. A `docs_root` of `"."` is a no-op, since there's no code subtree to separate.
+</Note>
+
 ### Stage 3 — map the diff to impacted pages
 
 `run` begins by wrapping the injected LLM `client` in a `MeteredClient` so every judge, edit, and critique call accrues token usage and estimated cost onto `result.usage`. It then calls `map_impact`, which produces the list of pages the diff touches, each carrying a `confidence` score.
@@ -89,7 +93,7 @@ Each surviving page runs through `_process_page`, which is deliberately **pure w
 
 <Steps>
   <Step title="Stage 4 — generate the edit">
-    `edits.generate_page_edit` is handed the page path, its current content, the diff, the impact record, the manifest entry, and config. It returns a structured edit. If the model returns no edits, the outcome records `no_change_reason` and the page is done.
+    `edits.generate_page_edit` is handed the page path, its current content, the diff, the impact record, the manifest entry, and config. It returns a structured edit. The configured `thoroughness` (`light` | `medium` | `high`) is woven into the edit prompt and sets the per-page token budget, tuning how deep the edits go. If the model returns no edits, the outcome records `no_change_reason` and the page is done.
   </Step>
   <Step title="Stage 4b — adversarial self-critique (opt-in)">
     When `self_critique` is on, `critique.critique_page_edit` reviews the proposed edit and `apply_critique` may drop weak edits. This is best-effort: if the critique call fails, the original edit is kept rather than blocking the page.
@@ -172,7 +176,7 @@ Symbol extraction is language-dispatched in `extract_symbols`: Python uses the A
 
 ### B2 — plan the information architecture
 
-`plan_docs` is the heart of bootstrap. It gathers what already exists (`_existing_page_paths` on disk plus the adapter's `nav_routes`), builds a planner prompt, and makes a **single judge-model call** that returns a `DocPlan`.
+`plan_docs` is the heart of bootstrap. It gathers what already exists (`_existing_page_paths` on disk plus the adapter's `nav_routes`), builds a planner prompt (its site-size target scaled by `config.thoroughness` — `light` plans a small essential spine, `high` a page per significant subsystem/API), and makes a **single judge-model call** that returns a `DocPlan`.
 
 ```python
 raw_plan: DocPlan = llm.parse(
@@ -211,7 +215,7 @@ The planner is explicitly told never to propose a page whose path or route alrea
 
 ### B3–B5 — author, validate, emit
 
-For each planned page, bootstrap reads the actual source excerpts it needs. `read_excerpt` reads a file read-only, truncated to a per-file budget, and returns `""` if the file is missing or unreadable — so one bad path can't sink an otherwise-fine page. Authoring uses an Opus, kind-specific prompt and runs in parallel through the shared `run_parallel` helper, metered like every other LLM call.
+For each planned page, bootstrap reads the actual source excerpts it needs. `read_excerpt` reads a file read-only, truncated to a per-file budget, and returns `""` if the file is missing or unreadable — so one bad path can't sink an otherwise-fine page. Authoring uses an Opus, kind-specific prompt — with a thoroughness directive and token budget set by `config.thoroughness_for(kind)` (so `thoroughness_by_kind` can deepen reference pages independently) — and runs in parallel through the shared `run_parallel` helper, metered like every other LLM call.
 
 Because there's no original page to diff against, validation uses `validate_new_page` — **absolute gates** rather than the comparative checks of the update path. Surviving pages are written out by `write_bootstrap`, which also emits ordered nav sections and manifest anchors (`merge_manifest_pages` into `MANIFEST_FILE`), producing a `BootstrapResult`.
 

@@ -75,6 +75,14 @@ A big platform could overflow the planner's context. `render_digests` caps each 
 
 `build_plan_prompt` returns a `(system, user)` tuple for the judge call. The system prompt is where the IA philosophy lives — it instructs the model to design a real reading flow, not a flat list of API pages.
 
+The prompt also carries a **size target** keyed off the run's `thoroughness` level (passed as `build_plan_prompt(..., thoroughness=...)`, defaulting to `"medium"`). `_PLAN_SIZE_TARGET` maps each level to a directive that tells the planner how big a site to design:
+
+- **light** — keep the site small and essential, roughly 3–6 pages covering only the core reading flow.
+- **medium** — a focused site of roughly 7–15 pages over the primary subsystems and main reference surface.
+- **high** — comprehensive: a page per significant subsystem, service, and public API/data-model, plus the narrative pages that tie them together.
+
+`plan_docs` resolves the level from `config.thoroughness_for()` and threads it through, so the same dial that governs authoring depth also governs the IA's breadth.
+
 ### Sections and page kinds
 
 The prompt establishes two organizing axes. First, an ordered set of **sections**, drawn from a canonical vocabulary:

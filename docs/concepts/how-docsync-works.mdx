@@ -121,7 +121,7 @@ To stop a large platform from overflowing the planner's context, each repo's blo
 
 ### What the planner is asked to produce
 
-`build_plan_prompt()` constructs the system and user messages. The system prompt frames the model as a senior technical writer designing a *complete site* for a platform with no docs, and is specific about the output:
+`build_plan_prompt()` constructs the system and user messages. The system prompt frames the model as a senior technical writer designing a *complete site* for a platform with no docs, and is specific about the output. It also injects a **size target** derived from `config.thoroughness` (`light | medium | high`, via `_PLAN_SIZE_TARGET`): `light` plans a small, essential spine (~3–6 pages), `medium` a focused site (~7–15 pages), and `high` a comprehensive page-per-subsystem layout; it defaults to `medium` when unset. The system prompt then continues:
 
 - Organize pages into **ordered sections**, using the vocabulary and order of `SECTION_ORDER` where they apply: **Getting Started → Concepts → Architecture → Reference → Operations**.
 - Use three page **kinds**:

@@ -240,9 +240,9 @@ One source-of-truth location a doc page is anchored to.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `repo` | `str` | — | Matches `CodeDiff.repo`. |
-| `globs` | `list[str]` | `[]` | `fnmatch` globs over changed paths. |
-| `symbols` | `list[str]` | `[]` | Symbol names (supports a trailing `*`). |
+| `repo` | `str` | `""` | Source repo this anchor belongs to (matches `CodeDiff.repo`). Empty = the only/local repo: matches any diff, so mono/single manifests can omit it. Poly manifests set it to scope each anchor to one repo. |
+| `globs` | `list[str]` | `[]` | `fnmatch` globs over changed file paths. |
+| `symbols` | `list[str]` | `[]` | Symbol names to match (trailing `*` = prefix). |
 
 #### `ManifestPage`
 
@@ -263,6 +263,6 @@ A documentation page and the code it is anchored to.
 
 | Concept | Where it appears | Notes |
 | --- | --- | --- |
-| `repo` identifier | `CodeDiff`, `RepoDigest`, `PlannedSource`, `ManifestSource` | `owner/name` or a local path; the join key across diff, digest, and anchors. |
+| `repo` identifier | `CodeDiff`, `RepoDigest`, `PlannedSource`, `ManifestSource` | `owner/name` or a local path; the join key across diff, digest, and anchors. An empty `ManifestSource.repo` is a wildcard matching any diff (mono/single manifests). |
 | `globs` | `PlannedSource`, `ManifestSource` | `fnmatch` patterns evaluated over changed paths. |
 | `symbols` | `PlannedSource`, `ManifestSource`, `ChangedFile`, `SourceUnit` | Symbol names; a trailing `*` denotes a prefix match in the anchor models. |

@@ -39,12 +39,13 @@ Make sure the `docsync` CLI is available on your PATH. It is a Typer-based comma
 | `docsync map` | Impact mapping only (no LLM edits) — a cheap, dry inspection. |
 | `docsync index` | Build or refresh the embeddings index (optional recall-net). |
 
-Two onboarding helpers sit in front of the pipeline:
+Three onboarding helpers sit in front of the pipeline:
 
 | Command | What it does |
 | --- | --- |
 | `docsync init` | Scaffold a starter `.docsync/` skeleton in your docs repo. |
 | `docsync doctor` | Validate the manifest still resolves against real source checkouts. |
+| `docsync explain` | Print every config field (and `docsync explain manifest` for the manifest schema) with its default and meaning. |
 
 ## Set up your docs repo
 
@@ -61,13 +62,17 @@ Two onboarding helpers sit in front of the pipeline:
     The generated `config.yml` looks like this:
 
     ```yaml .docsync/config.yml
-    # docsync config — see DocsyncConfig in models.py for all options.
+    # docsync config — run `docsync explain` to see every field and its default.
     models:
       edit_model: <default edit model>
       judge_model: <default judge model>
       edit_effort: <default edit effort>
     # Root of the docs tree, relative to this repo (where page paths resolve).
     docs_root: "."
+    # Repository topology: auto | mono | single | poly (auto-detected by default).
+    repo_mode: auto
+    # Generation thoroughness: light | medium | high.
+    thoroughness: medium
     # GitHub handles requested as reviewers on opened doc-update PRs.
     reviewers: []
     # Labels applied to opened docs PRs (auto-created in this repo if missing).
@@ -105,7 +110,7 @@ Two onboarding helpers sit in front of the pipeline:
     Edit the entry so that:
 
     - `path` points at a real page that exists under `docs_root`.
-    - `repo` matches the source repo by `owner/name` (a bare `name` checkout also reconciles via the same key normalization mapping uses).
+    - `repo` matches the source repo by `owner/name` (a bare `name` checkout also reconciles via the same key normalization mapping uses). It is optional in a single-/mono-repo setup — an empty `repo` is a wildcard that matches any diff.
     - `globs` are `fnmatch` globs over changed file paths.
     - `symbols` are symbol names; a trailing `*` matches by prefix.
 
@@ -207,6 +212,9 @@ By default, `docsync run` is a **dry run**: it computes impact and writes a repo
   </Card>
   <Card title="--min-confidence / --max-pages" icon="sliders">
     Skip the edit stage below an impact-confidence threshold, or cap the number of edited pages (highest-confidence first). Both override the matching config values — ideal for a conservative first rollout.
+  </Card>
+  <Card title="--thoroughness" icon="gauge">
+    Set generation depth: `light`, `medium`, or `high`. Controls edit depth and the diff-size budget. Overrides `config.thoroughness`.
   </Card>
 </CardGroup>
 
