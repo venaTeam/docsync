@@ -298,6 +298,15 @@ class DocsyncConfig(BaseModel):
             "link checks, and the new-page extension."
         ),
     )
+    forge: Literal["auto", "github", "gitlab"] = Field(
+        default="auto",
+        description=(
+            "Host for the docs review request opened by --open-pr: 'github' (PR via the "
+            "`gh` CLI) or 'gitlab' (MR via the `glab` CLI). 'auto' detects it from the docs "
+            "repo's origin remote (URLs containing 'gitlab' → gitlab, else github). Set it "
+            "explicitly for a self-managed GitLab on an opaque hostname."
+        ),
+    )
     thoroughness: Literal["light", "medium", "high"] = Field(
         default="medium",
         description=(

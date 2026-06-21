@@ -14,18 +14,32 @@ from docsync import pr
 
 
 class FakeRun:
-    """Scriptable stand-in for subprocess.run; records every argv it sees."""
+    """Scriptable stand-in for subprocess.run; records every argv it sees.
 
-    def __init__(self, *, pr_list="[]", create_rc=0, create_url="https://gh/o/r/pull/7"):
+    Scripts both the GitHub (`gh`) and GitLab (`glab`) host CLIs plus `git`. The
+    `remote get-url origin` answer drives forge auto-detection.
+    """
+
+    def __init__(
+        self, *, pr_list="[]", create_rc=0, create_url="https://gh/o/r/pull/7",
+        mr_list="[]", mr_create_rc=0, mr_create_out="https://gl/o/r/-/merge_requests/7",
+        remote_url="https://github.com/o/r.git",
+    ):
         self.calls: list[list[str]] = []
         self.pr_list = pr_list
         self.create_rc = create_rc
         self.create_url = create_url
+        self.mr_list = mr_list
+        self.mr_create_rc = mr_create_rc
+        self.mr_create_out = mr_create_out
+        self.remote_url = remote_url
 
     def __call__(self, cmd, *args, **kwargs):
         self.calls.append(list(cmd))
         head = cmd[:3]
         if cmd[0] == "git":
+            if cmd[3:5] == ["remote", "get-url"]:
+                return SimpleNamespace(returncode=0, stdout=self.remote_url, stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if head == ["gh", "pr", "list"]:
             return SimpleNamespace(returncode=0, stdout=self.pr_list, stderr="")
@@ -36,6 +50,12 @@ class FakeRun:
             return SimpleNamespace(
                 returncode=self.create_rc, stdout=self.create_url, stderr="boom"
             )
+        if head == ["glab", "mr", "list"]:
+            return SimpleNamespace(returncode=0, stdout=self.mr_list, stderr="")
+        if head == ["glab", "mr", "create"]:
+            # glab prints chatter before the URL; _last_url must still find it.
+            out = f"Creating merge request\n{self.mr_create_out}\n"
+            return SimpleNamespace(returncode=self.mr_create_rc, stdout=out, stderr="boom")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     def cmds_starting(self, *prefix) -> list[list[str]]:
@@ -127,3 +147,72 @@ def test_write_patch_returns_none_on_non_git_dir(tmp_path):
     # None (not crash) so already-written pages aren't lost to a failed patch step.
     assert pr.write_patch(tmp_path, tmp_path / "out.patch") is None
     assert not (tmp_path / "out.patch").exists()
+
+
+# --- GitLab (glab) path ----------------------------------------------------------
+
+
+def test_detect_forge_reads_origin_remote(tmp_path, monkeypatch):
+    fake = FakeRun(remote_url="git@gitlab.internal.example:team/docs.git")
+    monkeypatch.setattr(pr.subprocess, "run", fake)
+    assert pr.detect_forge(tmp_path) == "gitlab"
+
+    fake = FakeRun(remote_url="https://github.com/o/r.git")
+    monkeypatch.setattr(pr.subprocess, "run", fake)
+    assert pr.detect_forge(tmp_path) == "github"
+
+
+def test_last_url_extracts_trailing_url():
+    assert pr._last_url("Creating MR\n!7 draft\nhttps://gl/x/-/merge_requests/7\n") == (
+        "https://gl/x/-/merge_requests/7"
+    )
+
+
+def test_open_pr_explicit_gitlab_creates_mr(tmp_path, monkeypatch):
+    fake = FakeRun(mr_list="[]")
+    monkeypatch.setattr(pr.subprocess, "run", fake)
+
+    url = _open(tmp_path, fake, forge="gitlab")
+
+    assert url == "https://gl/o/r/-/merge_requests/7"
+    creates = fake.cmds_starting("glab", "mr", "create")
+    assert len(creates) == 1
+    # MR targets the source branch + label is passed through; no `gh` is ever called.
+    assert "--source-branch" in creates[0] and "docsync/svc-abc12345" in creates[0]
+    assert "--label" in creates[0] and "docsync" in creates[0]
+    assert fake.cmds_starting("gh") == []
+
+
+def test_open_pr_auto_detects_gitlab_from_remote(tmp_path, monkeypatch):
+    # forge defaults to 'auto'; a gitlab remote routes to glab without an explicit flag.
+    fake = FakeRun(remote_url="https://gitlab.com/o/r.git", mr_list="[]")
+    monkeypatch.setattr(pr.subprocess, "run", fake)
+
+    url = _open(tmp_path, fake)
+
+    assert url == "https://gl/o/r/-/merge_requests/7"
+    assert fake.cmds_starting("glab", "mr", "create")
+    assert fake.cmds_starting("gh") == []
+
+
+def test_open_pr_gitlab_updates_in_place_when_mr_exists(tmp_path, monkeypatch):
+    fake = FakeRun(mr_list='[{"web_url": "https://gl/o/r/-/merge_requests/3"}]')
+    monkeypatch.setattr(pr.subprocess, "run", fake)
+
+    url = _open(tmp_path, fake, forge="gitlab")
+
+    # Returns the existing MR (the force-push refreshed it) and never re-creates.
+    assert url == "https://gl/o/r/-/merge_requests/3"
+    assert fake.cmds_starting("glab", "mr", "create") == []
+    assert any("push" in c and "--force-with-lease" in c for c in fake.calls)
+
+
+def test_open_pr_github_never_calls_glab(tmp_path, monkeypatch):
+    # The default GitHub path must not touch glab (no accidental cross-host calls).
+    fake = FakeRun(remote_url="https://github.com/o/r.git")
+    monkeypatch.setattr(pr.subprocess, "run", fake)
+
+    _open(tmp_path, fake)
+
+    assert fake.cmds_starting("gh", "pr", "create")
+    assert fake.cmds_starting("glab") == []
