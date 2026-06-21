@@ -57,21 +57,26 @@ The whole module is built around one type alias:
 Encoder = Callable[[list[str]], "np.ndarray"]
 ```
 
-Indexing, caching, and querying never import `torch` or `sentence-transformers` directly — they only call whatever `Encoder` they're handed. That decoupling has two payoffs:
+Indexing, caching, and querying never import `torch` or `sentence-transformers` directly — they only call whatever `Encoder` they're handed. That decoupling has three payoffs:
 
 - **Testability** — a tiny deterministic fake encoder exercises the full index/cache/query path with no model download and no heavy dependency.
 - **Graceful degradation** — production calls `default_encoder()`, which *lazily* loads `all-MiniLM-L6-v2`. If the optional extra is missing, the import raises `ImportError`, which callers treat as "recall-net unavailable."
+- **Air-gapped loading** — `default_encoder()` runs `model_name` through `resolve_model_source()` first, so a copy of the default model vendored into the package loads locally with no HuggingFace call.
 
 ```python
 def default_encoder(model_name: str = DEFAULT_MODEL) -> Encoder:
     from sentence_transformers import SentenceTransformer  # optional extra
-    model = SentenceTransformer(model_name)
+    model = SentenceTransformer(resolve_model_source(model_name))
 
     def _encode(texts: list[str]) -> np.ndarray:
         return np.asarray(model.encode(list(texts)), dtype=np.float32)
 
     return _encode
 ```
+
+<Note>
+When the wheel was built with the model **vendored** into the package (`docsync/_models/<name>`, populated by `scripts/vendor_model.py`), `resolve_model_source` maps the default model id to that local copy — an air-gapped install loads the recall-net offline with zero config and no HuggingFace call. An explicit local path or non-default id passes through unchanged; with nothing vendored the id resolves online as usual. Cache keys stay keyed on the logical model id, so on-disk indexes are unaffected.
+</Note>
 
 <Note>
 Vectors are **L2-normalized at build time** (`_normalize`), so a query reduces to a single dot product — cosine similarity becomes plain matrix multiplication at query time. Zero-norm rows are clamped to `1e-12` to avoid division by zero.
