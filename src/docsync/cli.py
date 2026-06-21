@@ -107,7 +107,7 @@ def run(
     pr_number: Optional[int] = typer.Option(None),
     pr_title: Optional[str] = typer.Option(None),
     dry_run: bool = typer.Option(True, help="Compute + report only; do not write or open a PR."),
-    open_pr: bool = typer.Option(False, help="Branch, commit, push, and open a docs PR."),
+    open_pr: bool = typer.Option(False, help="Branch, commit, push, and open a docs PR (GitHub) or MR (GitLab); see config.forge."),
     use_embeddings: bool = typer.Option(
         True,
         help="Embeddings recall-net: also surface drift on pages the manifest doesn't "
@@ -267,6 +267,7 @@ def run(
             paths=written,
             reviewers=config.reviewers,
             labels=config.pr_labels,
+            forge=config.forge,
         )
         history.record_run(
             docs_repo, result, command="run", status="opened", pr_url=url, originals=originals
@@ -340,7 +341,7 @@ def bootstrap(
         False, help="Plan the site and print the outline only — no authoring (no Opus spend)."
     ),
     dry_run: bool = typer.Option(True, help="Compute + report only; do not write or open a PR."),
-    open_pr: bool = typer.Option(False, help="Branch, commit, push, and open a docs PR."),
+    open_pr: bool = typer.Option(False, help="Branch, commit, push, and open a docs PR (GitHub) or MR (GitLab); see config.forge."),
     max_pages: Optional[int] = typer.Option(
         None, help="Cap authored pages (default: unbounded — author every planned page)."
     ),
@@ -427,6 +428,7 @@ def bootstrap(
             paths=written,
             reviewers=config.reviewers,
             labels=config.pr_labels,
+            forge=config.forge,
         )
         history.record_run(docs_repo, result, command="bootstrap", status="opened", pr_url=url)
         typer.echo(f"docsync: PR -> {url}")
