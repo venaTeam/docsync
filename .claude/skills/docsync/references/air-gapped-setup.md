@@ -41,16 +41,23 @@ Do this on a **connected** build host, then move artifacts inside the air-gap.
    docsync --help && docsync explain          # verify the CLI resolves
    ```
 
-## Phase B — stage the embedding model + wire the gateway
+## Phase B — embedding model + wire the gateway
 
-1. **Pre-stage the model.** On a connected host download
-   `sentence-transformers/all-MiniLM-L6-v2` (e.g. `huggingface-cli download …` or clone the repo),
-   then copy the model directory inside the air-gap, e.g. `/opt/docsync/models/all-MiniLM-L6-v2`.
-2. **Point config at the local path + force offline.** In `.docsync/config.yml`:
+**Preferred (no HuggingFace mirror needed): bundle the model in the wheel.** Build the wheel with
+the model vendored in — on a connected host run `python scripts/vendor_model.py` before
+`poetry build` (or `poetry build` once the model is committed via git-lfs). The model ships as
+package data, and `embeddings.resolve_model_source` loads it locally and automatically — **no HF
+download, no `embedding_model` config.** This is the cleanest fit when you have torch but no HF
+mirror. Belt-and-suspenders, still export `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` so nothing
+can reach the Hub.
+
+**Alternative (model not bundled): stage it on the host.**
+1. On a connected host download `sentence-transformers/all-MiniLM-L6-v2` and copy the directory
+   inside the air-gap, e.g. `/opt/docsync/models/all-MiniLM-L6-v2`.
+2. Point config at it + force offline. In `.docsync/config.yml`:
    ```yaml
    embedding_model: /opt/docsync/models/all-MiniLM-L6-v2
    ```
-   And export (belt-and-suspenders, so no Hub call can fire even if a path is wrong):
    ```bash
    export HF_HUB_OFFLINE=1
    export TRANSFORMERS_OFFLINE=1
