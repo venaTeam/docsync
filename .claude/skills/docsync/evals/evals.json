@@ -22,7 +22,7 @@
     {
       "id": 3,
       "prompt": "Our docs CI runs in GitLab (self-managed, air-gapped). I want docsync to run in a merge-request pipeline and open the docs MR automatically. How do I wire that up?",
-      "expected_output": "GitLab CI auto-detects the diff from GITLAB_CI + CI_* vars (no --from-event). CRUCIAL: --open-pr is GitHub-only and will NOT open a GitLab MR; instead open the MR via git push options (-o merge_request.create), glab mr create, or the GitLab MR API with $CI_JOB_TOKEN. Keep dry-run-first and human-review-the-MR norms.",
+      "expected_output": "GitLab CI auto-detects the diff from GITLAB_CI + CI_* vars (no --from-event). For air-gapped GitLab pass an explicit local --src-repo so the diff routes through diff_local (offline) not diff_github (github.com). --open-pr opens a GitLab MR natively via glab when config.forge=gitlab (needs glab on the runner); otherwise the pipeline opens the MR via push options / GitLab API. Keep dry-run-first and human-review-the-MR norms.",
       "files": []
     },
     {

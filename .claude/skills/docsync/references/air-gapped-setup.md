@@ -102,11 +102,12 @@ Once the offline CLI loop is proven, wiring it into the internal **GitLab** CI h
   ```
   (`$CI_PROJECT_DIR` is the source repo GitLab already cloned for the job.) `--from-event` is the
   GitHub event-JSON path and does nothing for GitLab.
-- **Opening the MR is on you, not `--open-pr`.** docsync's `--open-pr` only speaks GitHub `gh`.
-  On GitLab, let `run` write the edits + a patch (`--report-path`), then have the job open the MR:
-  `git push -o merge_request.create -o merge_request.target=<docs-default-branch>` to the internal
-  GitLab remote, or `glab mr create`, or the MR API with `$CI_JOB_TOKEN`. The `docs: sync …` MR is
-  always human-reviewed.
+- **`--open-pr` opens a GitLab MR natively** (set `forge: gitlab`, or rely on `auto` detecting it
+  from the origin remote). It shells to the **`glab`** CLI, so the runner needs `glab` installed and
+  a token that can push + open an MR in the docs repo. If you'd rather not ship `glab`, run without
+  `--open-pr`: `run` writes the edits + a patch (`--report-path`) and the job opens the MR itself via
+  `git push -o merge_request.create -o merge_request.target=<docs-default-branch>` or the MR API with
+  `$CI_JOB_TOKEN`. Either way the `docs: sync …` MR is always human-reviewed.
 - **Make the CI job hermetic.** Bake into the runner image: the Artifactory `pip.conf`, the
   pre-staged embedding model directory, and the offline/gateway env vars
   (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `HF_HOME`)

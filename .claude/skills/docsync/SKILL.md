@@ -90,8 +90,8 @@ docsync doctor --docs-repo /path/docs \
 # 6. Prove the live loop on a real change in one repo
 docsync map --docs-repo /path/docs --src-repo api=/path/api --base <sha1> --head <sha2>
 docsync run --docs-repo /path/docs --src-repo api=/path/api --base <sha1> --head <sha2> --dry-run
-#   drop --dry-run to write edits. On GitHub, add --open-pr (needs gh). On GitLab, let the
-#   pipeline open the MR (see "Running in CI" → --open-pr is GitHub-only).
+#   drop --dry-run to write edits; add --open-pr to open the PR/MR (GitHub via gh, GitLab via
+#   glab — set config.forge; see "Running in CI"). Needs the host CLI on the runner.
 ```
 
 For **brownfield** (docs already exist), swap step 3–4 for:
@@ -136,17 +136,21 @@ or a non-git path falls back to `diff_github`. So always point it at the local c
 - `--report-path out.md` saves the PR/MR-body markdown for inspection/artifacts.
 - `--from-event` is the **GitHub** event-JSON path — it does nothing for GitLab.
 
-### Opening the docs change — `--open-pr` is GitHub-only
+### Opening the docs change — `--open-pr` opens a PR (GitHub) or MR (GitLab)
 
-`--open-pr` shells to the GitHub `gh` CLI, so it only opens **GitHub** PRs. On **GitLab** (incl.
-self-managed / air-gapped), don't use `--open-pr`. Instead let `run` write the page edits to the
-docs working tree (and a patch via `--report-path`), then have the pipeline open the **MR** itself:
+`--open-pr` opens a **GitHub PR** (via the `gh` CLI) or a **GitLab MR** (via the `glab` CLI),
+chosen by the **`forge`** config field: `auto` (default — detects the host from the docs repo's
+`origin` remote), `github`, or `gitlab`. Self-managed GitLab on an opaque hostname should set
+`forge: gitlab` explicitly. The picked CLI (`gh` or `glab`) must be installed and authenticated on
+the runner; on air-gapped GitLab that means `glab` and a token that can push + open an MR in the
+docs repo.
 
-- push docsync's branch with GitLab **push options** —
-  `git push -o merge_request.create -o merge_request.target=main …`, or
-- use `glab mr create`, or the GitLab MR API with `$CI_JOB_TOKEN`.
+If you'd rather not let docsync open the MR (e.g. `glab` isn't available), run without `--open-pr`:
+`run` writes the page edits + a patch (`--report-path`), and the pipeline opens the MR itself via
+GitLab **push options** (`git push -o merge_request.create -o merge_request.target=main …`) or the
+GitLab MR API with `$CI_JOB_TOKEN`.
 
-Either way the resulting `docs: sync …` MR/PR is **always human-reviewed — never auto-merged.**
+Either way the resulting `docs: sync …` PR/MR is **always human-reviewed — never auto-merged.**
 
 ## Backends and models
 
