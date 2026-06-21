@@ -45,7 +45,7 @@ poetry install                 # core
 poetry install -E embeddings   # + sentence-transformers recall-net (pulls torch)
 ```
 
-Requires Python ≥ 3.11, `git`, and `gh` (for the cross-repo path). Set
+Requires Python ≥ 3.10, `git`, and `gh` (for the cross-repo path). Set
 `ANTHROPIC_API_KEY` for the edit/judge models.
 
 ## Use it (CLI — the Phase-0 dogfood)

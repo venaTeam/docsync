@@ -21,7 +21,7 @@ Two generation flows, plus onboarding/diagnostic commands:
 
 ## Stack & conventions
 
-- **Python ≥3.11** (the venv runs 3.13), **Poetry** with an in-project `.venv` (`poetry.toml`).
+- **Python ≥3.10** (the venv runs 3.13), **Poetry** with an in-project `.venv` (`poetry.toml`).
 - **Pydantic v2** (≥2.6) — note this differs from the sibling Keep services, which are v1.
   **Typer** CLI, **Anthropic SDK**. Optional `embeddings` extra = `sentence-transformers`.
 - **Lint/format is ruff only** (line-length 100, `src=["src"]`). No black/isort.
