@@ -6,7 +6,7 @@ description: The DocAdapter plugin interface and the Mintlify adapter that power
 A **documentation adapter** encapsulates everything format-specific about a docs framework: how to read a page's frontmatter, which structural invariants an edit must preserve, and how to run the framework's own link/build checks. Adapters are the seam through which `docsync` supports multiple documentation frameworks (Mintlify today; Docusaurus, GitBook, MkDocs, and custom formats later).
 
 <Note>
-The MVP ships exactly one adapter — `MintlifyAdapter`. `DocAdapter` is the abstract base that a Docusaurus or GitBook adapter would subclass.
+docsync ships three adapters — `MintlifyAdapter` (`.mdx` + `docs.json`), `DocusaurusAdapter` (`.md`/`.mdx` admonitions + `sidebars.js`), and the minimal `MarkdownAdapter` (plain `.md`). `DocAdapter` is the abstract base a GitBook or MkDocs adapter would subclass next. Select the active one with `adapter:` in `config.yml`.
 </Note>
 
 ## Architecture
@@ -39,6 +39,8 @@ Abstract base class (`abc.ABC`). Subclasses must implement the abstract methods;
 | `frontmatter_keys_to_freeze()` | abstract | `list[str]` | Frontmatter keys an edit must never change. |
 | `structural_signature(text)` | abstract | `dict` | Structural fingerprint compared before vs. after an edit. |
 | `structural_problems(text)` | default | `list[str]` | Well-formedness problems (empty == well-formed). Default: `[]`. |
+| `additive_safe_components()` | default | `frozenset[str]` | Leaf elements an edit may *add* (signature names). Default: `frozenset()`. |
+| `authoring_components_hint()` | default | `str` | Prompt fragment naming the framework's callout/component syntax. Default: plain-Markdown guidance. |
 | `check_links(docs_root)` | abstract | `list[str]` | Run the framework's broken-link check (empty == clean). |
 | `nav_routes(docs_root)` | default | `list[str]` | Existing nav routes for collision checks. Default: `[]`. |
 | `register_pages_in_nav(docs_root, page_paths, *, group)` | default | `list[str]` | Add pages to the nav. Default: `[]` (no-op). |
@@ -72,6 +74,8 @@ These methods ship with safe defaults so a minimal adapter only needs the abstra
 | Method | Default behavior | When to override |
 |--------|------------------|------------------|
 | `structural_problems(text)` | Returns `[]` (no checks). | When the framework has nesting/balance rules counts can't catch. |
+| `additive_safe_components()` | Returns `frozenset()` (signature fully frozen). | When an edit may safely *add* a balanced leaf (a `<Step>`, a `:::note`). |
+| `authoring_components_hint()` | Plain-Markdown guidance (no components). | When the framework has its own callout/component syntax to teach the author/edit prompts. |
 | `nav_routes(docs_root)` | Returns `[]` (no nav file → nothing to collide with). | When the framework has a navigation manifest. |
 | `register_pages_in_nav(...)` | Returns `[]` (no-op). | When pages must be added to a nav manifest. |
 | `set_nav_sections(...)` | Returns `[]` (no-op). | When multiple nav sections need ordering. |
@@ -200,6 +204,38 @@ Mintlify v4 reads `docs.json` and ignores the legacy `mint.json`, so `docs.json`
 |----------|-------|-------|
 | `_DOCS_JSON` | `"docs.json"` | Canonical Mintlify v4 nav/config file. |
 | `_MINT_JSON` | `"mint.json"` | Legacy file, mirrored only when present. |
+
+## `DocusaurusAdapter`
+
+Adapter for [Docusaurus](https://docusaurus.io) docs (`name = "docusaurus"`). Docusaurus is a self-contained static-site generator that builds locally, which makes it the right target for **air-gapped** installs where Mintlify's hosted broken-link checker can't reach the network.
+
+```python
+from docsync.adapters.docusaurus import DocusaurusAdapter
+
+adapter = DocusaurusAdapter()
+adapter.page_extension  # ".md" — admonitions render in plain Markdown
+```
+
+### Structure: admonitions + components
+
+Docusaurus's structural chrome is **admonitions** — `:::note … :::` block directives — plus a few MDX components on `.mdx` pages. `structural_signature` fingerprints both:
+
+| Signature key | Meaning |
+|---------------|---------|
+| `"note"`, `"tip"`, … | Count of each admonition opener (`:::note`, `:::tip`, `:::info`, `:::warning`, `:::danger`, `:::caution`). |
+| `"/note"`, `"/tip"`, … | Each bare `:::` closer, attributed via a stack to the admonition type it closes. |
+| `"Tabs"`, `"TabItem"`, `"Details"` (+ `/…`) | Known MDX component open/close tags. |
+| `fence_count`, `mermaid_count` | Code-fence and mermaid counts, as in the other adapters. |
+
+Matched open/close keys let an edit **add** a balanced `:::note` the same way the Mintlify adapter allows a new `<Note>`: `additive_safe_components()` returns the admonition types plus `TabItem` (the `Tabs`/`Details` containers stay frozen). `structural_problems` stack-checks admonition balance and component nesting independently; `repair_structure` closes a trailing unclosed `:::` block and drops stray closers.
+
+### Link check (soft gate)
+
+`check_links(docs_root)` is **self-contained** — it never shells out to a CLI. It walks every page under `docs_root`, pulls Markdown `[text](target)` links, and flags a relative file link whose target resolves to nothing on disk. To stay quiet on a soft gate it only inspects clearly-checkable links (ending in a page extension, or starting with `./`/`../`) and skips external URLs, in-page anchors, and absolute `/route` slugs.
+
+### Navigation (`sidebars.js`)
+
+Docusaurus reads its sidebar from `sidebars.js`/`sidebars.ts` at the **project root** (the directory holding `docusaurus.config.{js,ts}`), which the adapter locates by walking up from `docs_root`. `set_nav_sections` writes a manual sidebar (`module.exports = { docsSidebar: [ {type:"category", label, items:[…]}, … ] }`) with categories in reading-flow order, set-unioned and idempotent; `nav_routes` reads the doc ids back. The adapter assumes an already-initialized Docusaurus project — `ensure_valid_docs_json` seeds an empty `sidebars.js` but does **not** fabricate `docusaurus.config.js`.
 
 ## Implementing a new adapter
 

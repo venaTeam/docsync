@@ -5,8 +5,8 @@ MDX components (`<Card>`, `<CardGroup>`, `<Steps>`, ...). This adapter knows how
 to read that frontmatter, fingerprint the structural shapes an edit must preserve,
 and run Mintlify's own broken-link checker over a patched tree.
 
-It is the only adapter the MVP ships; `base.DocAdapter` is the seam where a
-Docusaurus / GitBook adapter would slot in later.
+It is docsync's default adapter; `DocusaurusAdapter` and `MarkdownAdapter` cover the
+other shipped frameworks, and `base.DocAdapter` is the seam for the next one.
 """
 
 from __future__ import annotations
@@ -47,6 +47,15 @@ _KNOWN_COMPONENTS = frozenset(
         "CodeGroup",
         "Frame",
     }
+)
+
+# Leaf components an edit may *add* when the diff motivates it (documenting a new
+# field/route/stage often means one more <Step>/<Note>/<Card>). Their structural
+# containers (CardGroup/Steps/Tabs/AccordionGroup/CodeGroup/Frame) stay frozen — adding a
+# whole container is a real structural change — and *removing* any of these is always
+# rejected (a count decrease is a deletion). Consumed by validate via the adapter hook.
+_ADDITIVE_SAFE_COMPONENTS = frozenset(
+    {"Card", "Warning", "Note", "Tip", "Info", "Step", "Accordion", "Tab"}
 )
 
 # A code-fence marker is a line whose first non-space content is ``` (3+ backticks).
@@ -126,6 +135,22 @@ class MintlifyAdapter(DocAdapter):
 
     def frontmatter_keys_to_freeze(self) -> list[str]:
         return ["title", "description"]
+
+    # -- authoring / additive-edit policy ---------------------------------
+
+    def additive_safe_components(self) -> frozenset[str]:
+        """Leaf MDX components an edit may add (containers stay frozen)."""
+        return _ADDITIVE_SAFE_COMPONENTS
+
+    def authoring_components_hint(self) -> str:
+        return (
+            "This page uses Mintlify MDX components. You MAY add new leaf components — "
+            "<Note>, <Tip>, <Warning>, <Info>, <Card>, <Step>, <Accordion>, <Tab> — when "
+            "the content warrants one, but ALWAYS as a balanced pair (every <Note> needs "
+            "its </Note>; a self-closing <Card/> is fine). NEVER remove a component, alter "
+            "a container component (<CardGroup>, <Steps>, <Tabs>, <AccordionGroup>), reorder "
+            "or mis-nest tags, or change the number of code/mermaid fences."
+        )
 
     # -- structural fingerprint -------------------------------------------
 

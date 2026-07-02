@@ -50,8 +50,8 @@ def _build_system_prompt(kind: str) -> str:
             "parameters, values, routes, or behavior. Only restructure, condense, clarify, "
             "or re-order content already on the page. You MAY add a short lead sentence, but "
             "only if it paraphrases information already present.",
-            "NEVER change the YAML frontmatter. NEVER alter MDX component tag structure "
-            "(<CardGroup>, <Card>, <Steps>, <Note>, etc.) or break code fences.",
+            "NEVER change the YAML frontmatter. NEVER alter the page's component or "
+            "callout structure (MDX tags or `:::` admonitions) or break code fences.",
             style.INVERTED_PYRAMID,
             style.SCANNABILITY,
             style.kind_structure(kind),

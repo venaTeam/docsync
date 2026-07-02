@@ -20,6 +20,7 @@ injectable `client` (wrapped in `MeteredClient`), so cost lands on `result.usage
 from __future__ import annotations
 
 import ast
+import os.path
 import re
 from fnmatch import fnmatch
 from pathlib import Path
@@ -43,7 +44,7 @@ from .models import (
     RepoDigest,
 )
 from .pool import run_parallel
-from .adapters import make_adapter
+from .adapters import DEFAULT_ADAPTER, make_adapter
 from .validate import validate_new_page
 
 _PLAN_MAX_TOKENS = 6_000
@@ -145,10 +146,17 @@ def build_plan_prompt(
     existing_routes: list[str],
     existing_pages: set[str],
     thoroughness: str = "medium",
+    page_extension: str = ".mdx",
 ) -> tuple[str, str]:
-    """Return (system, user) for the IA planner call (a sectioned, ordered site)."""
+    """Return (system, user) for the IA planner call (a sectioned, ordered site).
+
+    `page_extension` is the active adapter's new-page extension, woven into the
+    page-path examples so the planner proposes paths in the framework's flavor
+    (`.mdx` for Mintlify, `.md` for Docusaurus/Markdown).
+    """
     repos = ", ".join(d.repo for d in digests)
     sections = ", ".join(SECTION_ORDER)
+    ext = page_extension
     system = "\n".join(
         [
             "You are a senior technical writer planning a complete developer "
@@ -166,9 +174,9 @@ def build_plan_prompt(
             "Include platform-level narrative pages (an Introduction, an Architecture "
             "overview, a cross-service data-flow page) as concept/guide kind — these may "
             "span MULTIPLE repos.",
-            "For EACH page provide: page_path (NEW kebab-case .mdx under a section folder, "
-            "e.g. getting-started/introduction.mdx, architecture/data-flow.mdx, "
-            "reference/alerts.mdx); title; kind; section (the nav group heading); order "
+            f"For EACH page provide: page_path (NEW kebab-case {ext} under a section "
+            f"folder, e.g. getting-started/introduction{ext}, architecture/data-flow{ext}, "
+            f"reference/alerts{ext}); title; kind; section (the nav group heading); order "
             "(integer, ascending within the section); a one-sentence summary; and sources "
             "— a list of {repo, globs, symbols} anchoring the page to real code. Reference "
             "pages should anchor to specific files + symbols; concept/guide pages should "
@@ -208,7 +216,7 @@ def plan_docs(
     existing_routes = adapter.nav_routes(docs_root)
     system, user = build_plan_prompt(
         digests, existing_routes=existing_routes, existing_pages=existing_pages,
-        thoroughness=config.thoroughness_for(),
+        thoroughness=config.thoroughness_for(), page_extension=adapter.page_extension,
     )
 
     raw_plan: DocPlan = llm.parse(
@@ -383,32 +391,36 @@ def _extract_api_surface(excerpts: list[tuple[str, str]], planned: PlannedPage) 
 
 
 # Mechanical output contract (the craft rules live in style.py). The grounding rule is
-# omitted here because style.GROUNDING already states it, more fully.
-_BASE_RULES = [
-    "Return the ENTIRE file: YAML frontmatter with a non-empty `title` and "
-    "`description`, then the MDX body.",
-    "Use Mintlify components where they help (<CardGroup>/<Card>, <Steps>/<Step>, "
-    "<Note>, <Warning>, <Tabs>/<Tab>); keep every component tag balanced and correctly "
-    "nested, and keep code fences balanced.",
-    "Do NOT include navigation config; write a self-contained page.",
-]
+# omitted here because style.GROUNDING already states it, more fully. The framework's
+# component/callout syntax comes from the adapter hint, injected at build time.
+def _base_rules(components_hint: str) -> list[str]:
+    return [
+        "Return the ENTIRE file: YAML frontmatter with a non-empty `title` and "
+        "`description`, then the page body.",
+        components_hint,
+        "Do NOT include navigation config; write a self-contained page.",
+    ]
+
 
 _KIND_INTRO = {
-    "reference": "You author a single, complete Mintlify API/data-model REFERENCE page. "
+    "reference": "You author a single, complete API/data-model REFERENCE page. "
     "Document the actual functions, routes, classes, fields, and enums precisely "
     "(tables are good here).",
-    "concept": "You author a single, complete Mintlify CONCEPT page: a narrative that "
+    "concept": "You author a single, complete CONCEPT page: a narrative that "
     "explains how this subsystem (or cross-service flow) works to a developer new to it. "
     "Favor clear prose, a mermaid diagram where it clarifies flow, and worked examples "
     "over exhaustive API tables.",
-    "guide": "You author a single, complete Mintlify GUIDE page: task-oriented onboarding "
-    "(what it is, how to set it up, run it, and make a first call). Use <Steps> for "
-    "procedures and keep it practical.",
+    "guide": "You author a single, complete GUIDE page: task-oriented onboarding "
+    "(what it is, how to set it up, run it, and make a first call). Present procedures "
+    "as numbered steps and keep it practical.",
 }
 
 
 def build_author_prompt(
-    planned: PlannedPage, excerpts: list[tuple[str, str]], thoroughness: str = "medium"
+    planned: PlannedPage,
+    excerpts: list[tuple[str, str]],
+    thoroughness: str = "medium",
+    components_hint: str | None = None,
 ) -> tuple[str, str]:
     """Return (system, user) for authoring one page, tailored to its kind.
 
@@ -419,6 +431,8 @@ def build_author_prompt(
     the model documents every public symbol precisely, with the raw excerpts as backup.
     """
     intro = _KIND_INTRO.get(planned.kind, _KIND_INTRO["reference"])
+    if components_hint is None:
+        components_hint = make_adapter(DEFAULT_ADAPTER).authoring_components_hint()
     system = "\n".join(
         [
             intro,
@@ -428,7 +442,7 @@ def build_author_prompt(
             style.kind_structure(planned.kind),
             style.DIATAXIS_DISCIPLINE,
             style.GROUNDING,
-            *_BASE_RULES,
+            *_base_rules(components_hint),
         ]
     )
     code_blocks = "\n\n".join(
@@ -447,7 +461,7 @@ def build_author_prompt(
         f"# Source code this page documents\n\n{code_blocks}\n\n"
         "Open the body with the lead summary, make the frontmatter `description` a single "
         "strong sentence (the page's BLUF), and follow the section structure for this "
-        "kind. Write the complete .mdx file now."
+        "kind. Write the complete documentation page now."
     )
     return system, user
 
@@ -462,7 +476,8 @@ def author_page(
     """Generate the full MDX text for one planned page (Opus, structured output)."""
     excerpts = _gather_excerpts(planned, repo_units)
     thoroughness = config.thoroughness_for(planned.kind)
-    system, user = build_author_prompt(planned, excerpts, thoroughness)
+    components_hint = make_adapter(config.adapter).authoring_components_hint()
+    system, user = build_author_prompt(planned, excerpts, thoroughness, components_hint)
     authored: AuthoredPage = llm.parse(
         client,
         stage="author",
@@ -619,10 +634,12 @@ def write_bootstrap(
 
     # Page + nav paths are docs_root-relative; prefix with docs_root so every path
     # is relative to the docs *repo* root — what pr.open_pr's `git add` expects (the
-    # manifest path already is). A "." docs_root normalises away to a no-op.
+    # manifest path already is). A "." docs_root normalises away to a no-op. normpath
+    # collapses any `..` a nav file outside docs_root carries (Docusaurus keeps
+    # `sidebars.js` at the project root, i.e. `../sidebars.js` from a `docs/` content dir).
     prefix = Path(config.docs_root)
-    page_rel = [(prefix / p).as_posix() for p in written]
-    nav_rel = [(prefix / n).as_posix() for n in sorted(nav_touched)]
+    page_rel = [os.path.normpath(prefix / p) for p in written]
+    nav_rel = [os.path.normpath(prefix / n) for n in sorted(nav_touched)]
     touched = [*page_rel, *nav_rel]
     if added:
         touched.append(f".docsync/{MANIFEST_FILE}")

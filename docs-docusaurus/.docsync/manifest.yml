@@ -1,0 +1,131 @@
+# docsync manifest — maps each doc page to the source code it documents.
+# Bootstrapped by `docsync bootstrap`; anchors drive impact mapping for the
+# update pipeline. Run `docsync doctor` to keep them honest.
+pages:
+  - path: getting-started/introduction.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/__init__.py
+          - src/docsync/cli.py
+          - README*
+    judge_required: true
+  - path: getting-started/installation.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/scaffold.py
+          - src/docsync/cli.py
+        symbols:
+          - init_docs_repo
+          - detect_docs_root
+          - app
+    judge_required: true
+  - path: getting-started/quick-start.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cli.py
+          - src/docsync/pipeline.py
+          - src/docsync/bootstrap.py
+        symbols:
+          - run
+          - bootstrap
+          - write_changes
+    judge_required: true
+  - path: concepts/how-it-works.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/pipeline.py
+          - src/docsync/impact.py
+          - src/docsync/edits.py
+          - src/docsync/validate.py
+          - src/docsync/bootstrap.py
+    judge_required: true
+  - path: concepts/manifest-and-anchors.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/config.py
+          - src/docsync/models.py
+          - src/docsync/ingest.py
+        symbols:
+          - load_manifest
+          - PlannedSource
+          - extract_symbols
+          - walk_repo
+    judge_required: true
+  - path: concepts/adapters.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/adapters/*.py
+    judge_required: true
+  - path: architecture/pipeline-overview.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/pipeline.py
+          - src/docsync/impact.py
+          - src/docsync/edits.py
+          - src/docsync/critique.py
+          - src/docsync/polish.py
+          - src/docsync/validate.py
+    judge_required: true
+  - path: architecture/code-to-docs-flow.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/diff.py
+          - src/docsync/ingest.py
+          - src/docsync/impact.py
+          - src/docsync/edits.py
+          - src/docsync/pr.py
+          - src/docsync/pipeline.py
+    judge_required: true
+  - path: reference/cli-commands.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/cli.py
+        symbols:
+          - app
+          - run
+          - bootstrap
+          - _apply_thoroughness
+          - _load_config
+  - path: reference/configuration.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/config.py
+        symbols:
+          - load_config
+          - DocsyncConfig
+  - path: reference/manifest-schema.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/config.py
+          - src/docsync/models.py
+        symbols:
+          - load_manifest
+          - PlannedPage
+          - PlannedSource
+          - PageKind
+  - path: reference/core-models.md
+    sources:
+      - repo: docsync
+        globs:
+          - src/docsync/models.py
+        symbols:
+          - CodeDiff
+          - ChangedFile
+          - FileStatus
+          - DocPlan
+          - PlannedPage
+          - PlannedSource
+          - PageKind
+          - RepoDigest
+          - SourceUnit

@@ -10,6 +10,7 @@ entry here plus the adapter module. Config selects the active adapter via
 from __future__ import annotations
 
 from .base import DocAdapter
+from .docusaurus import DocusaurusAdapter
 from .markdown import MarkdownAdapter
 from .mintlify import MintlifyAdapter
 
@@ -17,6 +18,7 @@ from .mintlify import MintlifyAdapter
 ADAPTERS: dict[str, type[DocAdapter]] = {
     MintlifyAdapter.name: MintlifyAdapter,
     MarkdownAdapter.name: MarkdownAdapter,
+    DocusaurusAdapter.name: DocusaurusAdapter,
 }
 
 DEFAULT_ADAPTER = MintlifyAdapter.name
@@ -35,5 +37,5 @@ def make_adapter(name: str) -> DocAdapter:
         raise ValueError(f"unknown adapter {name!r} (known: {known})") from None
 
 
-__all__ = ["ADAPTERS", "DEFAULT_ADAPTER", "DocAdapter", "MarkdownAdapter", "MintlifyAdapter",
-           "make_adapter"]
+__all__ = ["ADAPTERS", "DEFAULT_ADAPTER", "DocAdapter", "DocusaurusAdapter",
+           "MarkdownAdapter", "MintlifyAdapter", "make_adapter"]

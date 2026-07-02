@@ -292,11 +292,19 @@ def test_minimal_init_detects_root_and_writes_no_manifest(tmp_path: Path) -> Non
     assert cfg.adapter == "mintlify"  # default; not written for the default framework
 
 
-def test_detect_adapter_markdown_from_docusaurus_config(tmp_path: Path) -> None:
+def test_detect_adapter_docusaurus_from_config(tmp_path: Path) -> None:
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "intro.md").write_text("# intro\n", encoding="utf-8")
     (tmp_path / "docusaurus.config.js").write_text("module.exports = {}\n", encoding="utf-8")
-    assert detect_adapter(tmp_path, ".") == "markdown"
+    assert detect_adapter(tmp_path, ".") == "docusaurus"
+
+
+def test_detect_adapter_docusaurus_config_above_docs_root(tmp_path: Path) -> None:
+    # The usual layout: docusaurus.config.js at the project root, content under docs/.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "intro.md").write_text("# intro\n", encoding="utf-8")
+    (tmp_path / "docusaurus.config.ts").write_text("export default {}\n", encoding="utf-8")
+    assert detect_adapter(tmp_path, "docs") == "docusaurus"
 
 
 def test_minimal_init_writes_markdown_adapter(tmp_path: Path) -> None:
