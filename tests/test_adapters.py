@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from docsync.adapters import ADAPTERS, MarkdownAdapter, MintlifyAdapter, make_adapter
+from docsync.adapters import (
+    ADAPTERS,
+    DocusaurusAdapter,
+    MarkdownAdapter,
+    MintlifyAdapter,
+    make_adapter,
+)
 from docsync.validate import get_adapter
 
 
@@ -19,16 +25,18 @@ from docsync.validate import get_adapter
 def test_registry_has_both_adapters():
     assert ADAPTERS["mintlify"] is MintlifyAdapter
     assert ADAPTERS["markdown"] is MarkdownAdapter
+    assert ADAPTERS["docusaurus"] is DocusaurusAdapter
 
 
 def test_make_adapter_resolves_by_name():
     assert isinstance(make_adapter("mintlify"), MintlifyAdapter)
     assert isinstance(make_adapter("markdown"), MarkdownAdapter)
+    assert isinstance(make_adapter("docusaurus"), DocusaurusAdapter)
 
 
 def test_make_adapter_unknown_raises_with_known_names():
-    with pytest.raises(ValueError, match="unknown adapter 'docusaurus'"):
-        make_adapter("docusaurus")
+    with pytest.raises(ValueError, match="unknown adapter 'gitbook'"):
+        make_adapter("gitbook")
 
 
 # --- get_adapter threads the configured adapter ----------------------------

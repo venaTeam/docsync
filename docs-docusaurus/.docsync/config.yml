@@ -1,0 +1,18 @@
+# docsync config — docsync documenting *itself* into a Docusaurus site.
+# Mirrors the Mintlify self-docs config (.docsync/config.yml) but selects the
+# Docusaurus adapter, so authored pages use admonitions + a sidebars.js nav.
+adapter: docusaurus
+models:
+  edit_model: claude-opus-4-8
+  judge_model: claude-haiku-4-5
+  edit_effort: high
+# Pages live under docs/ (Docusaurus content dir); sidebars.js sits at the project root.
+docs_root: "docs"
+# Repo-specific dirs to skip on ingest — not the product surface docsync documents.
+# `docs` is the Mintlify self-docs site; `docs-docusaurus` is this generated site.
+ingest_exclude_dirs: [examples, deploy, node-validate, docs, docs-docusaurus]
+reviewers: []
+pr_labels: [docsync]
+min_edit_confidence: 0.0
+max_parallel_requests: 4
+max_pages_per_run: 0

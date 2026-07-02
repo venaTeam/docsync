@@ -120,16 +120,20 @@ def detect_adapter(docs_repo: Path, docs_root: str) -> str:
     """Return the docs adapter name recognizable from the tree, else ``""``.
 
     A Mintlify `docs.json`/`mint.json` (or an `.mdx` tree) ⇒ ``"mintlify"``; a Docusaurus
-    config or an `.md`-only tree ⇒ ``"markdown"`` (the plain-Markdown adapter). The result
-    seeds `DocsyncConfig.adapter` in a `--minimal` init and is echoed to the adopter.
+    config ⇒ ``"docusaurus"``; an `.md`-only tree ⇒ ``"markdown"`` (the plain-Markdown
+    adapter). The result seeds `DocsyncConfig.adapter` in a `--minimal` init and is echoed
+    to the adopter. A Docusaurus config can sit at the docs content dir or its parent
+    (the usual `<root>/docs/` layout), so both are checked.
     """
     from .adapters.mintlify import _DOCS_JSON, _MINT_JSON
 
     root = Path(docs_repo) / docs_root
     if (root / _DOCS_JSON).exists() or (root / _MINT_JSON).exists():
         return "mintlify"
-    if (root / "docusaurus.config.js").exists() or (root / "docusaurus.config.ts").exists():
-        return "markdown"
+    config_names = ("docusaurus.config.js", "docusaurus.config.ts")
+    for base in (root, root.parent):
+        if any((base / name).exists() for name in config_names):
+            return "docusaurus"
 
     def _tree(ext: str) -> bool:
         return any(".docsync" not in p.parts for p in root.rglob(ext))

@@ -293,7 +293,8 @@ class DocsyncConfig(BaseModel):
     adapter: str = Field(
         default="mintlify",
         description=(
-            "Doc-framework adapter that owns the pages: 'mintlify' (.mdx + docs.json nav) "
+            "Doc-framework adapter that owns the pages: 'mintlify' (.mdx + docs.json nav), "
+            "'docusaurus' (.md/.mdx admonitions + sidebars.js nav, air-gapped-friendly), "
             "or 'markdown' (plain .md). Drives frontmatter freeze, structural integrity, "
             "link checks, and the new-page extension."
         ),

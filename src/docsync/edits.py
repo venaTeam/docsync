@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from . import llm
 from . import style
+from .adapters import DEFAULT_ADAPTER, make_adapter
 from .diffrender import render_diff
 from .llm import get_client
 from .models import (
@@ -117,9 +118,15 @@ def apply_edits(text: str, edit: PageEdit) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_system_prompt(allow_frontmatter_edit: bool, thoroughness: str = "medium") -> str:
+def _build_system_prompt(
+    allow_frontmatter_edit: bool,
+    thoroughness: str = "medium",
+    components_hint: str | None = None,
+) -> str:
+    if components_hint is None:
+        components_hint = make_adapter(DEFAULT_ADAPTER).authoring_components_hint()
     lines = [
-        "You update an existing MDX documentation page to reflect a code change. "
+        "You update an existing documentation page to reflect a code change. "
         "You return a list of find/replace edit operations — you NEVER rewrite the "
         "whole file.",
         style.thoroughness_directive(thoroughness),
@@ -141,13 +148,8 @@ def _build_system_prompt(allow_frontmatter_edit: bool, thoroughness: str = "medi
         )
     lines.extend(
         [
-            "MDX component rules (the page is validated against these — violating them "
-            "drops the edit): you MAY add new leaf components — <Note>, <Tip>, <Warning>, "
-            "<Info>, <Card>, <Step>, <Accordion>, <Tab> — when the diff introduces content "
-            "that warrants one, but ALWAYS as a balanced pair (every <Note> needs its "
-            "</Note>; a self-closing <Card/> is fine). NEVER remove a component, alter a "
-            "container component (<CardGroup>, <Steps>, <Tabs>, <AccordionGroup>), reorder "
-            "or mis-nest tags, or change the number of code/mermaid fences.",
+            "Component rules (the page is validated against these — violating them drops "
+            "the edit). " + components_hint,
             "Preserve inline backtick code references unless the underlying symbol was "
             "renamed in the diff.",
             "When ADDING content the diff introduces (a new field, route, or parameter), "
@@ -175,6 +177,7 @@ def build_edit_prompt(
     include_diff: bool = True,
     retry_hint: str | None = None,
     thoroughness: str = "medium",
+    components_hint: str | None = None,
 ) -> tuple[str, str]:
     """Return `(system_prompt, user_prompt)`.
 
@@ -188,7 +191,9 @@ def build_edit_prompt(
     allow_frontmatter_edit = bool(
         manifest_page is not None and manifest_page.allow_frontmatter_edit
     )
-    system_prompt = _build_system_prompt(allow_frontmatter_edit, thoroughness)
+    system_prompt = _build_system_prompt(
+        allow_frontmatter_edit, thoroughness, components_hint
+    )
     rendered = (
         rendered_diff if rendered_diff is not None
         else render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)
@@ -255,11 +260,12 @@ def generate_page_edit(
     # The edit flow has no per-page kind, so thoroughness is the global level (which
     # also keeps the cached system prompt byte-identical across every page in the run).
     thoroughness = config.thoroughness_for()
+    components_hint = make_adapter(config.adapter).authoring_components_hint()
     rendered = render_diff(diff, max_chars=_EDIT_DIFF_MAX_CHARS)
     system_prompt, user_prompt = build_edit_prompt(
         page_path, page_text, diff, impacted, manifest_page,
         rendered_diff=rendered, include_diff=not cache_diff, retry_hint=retry_hint,
-        thoroughness=thoroughness,
+        thoroughness=thoroughness, components_hint=components_hint,
     )
 
     system_blocks: list[dict] = [

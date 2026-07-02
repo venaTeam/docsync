@@ -32,8 +32,7 @@ SCANNABILITY = (
     "sentences or fewer); break a wall of prose into bullets, a table, or sub-headings. "
     "Use descriptive headings that say what the section answers. Prefer a table for any "
     "set of fields/parameters/options and a bullet list for any enumeration. Reserve a "
-    "<Note>/<Warning> callout for the one caveat that genuinely matters — don't sprinkle "
-    "them."
+    "callout for the one caveat that genuinely matters — don't sprinkle them."
 )
 
 GROUNDING = (
@@ -61,7 +60,7 @@ KIND_STRUCTURE: dict[str, str] = {
     ),
     "guide": (
         "Structure (GUIDE — get a task done): what this lets you do and when you'd want "
-        "it; prerequisites; the procedure as numbered <Steps>/<Step>; how to verify it "
+        "it; prerequisites; the procedure as numbered steps; how to verify it "
         "worked; and a short 'next steps' with links. Stay concrete and task-first — "
         "explain only what the reader needs to finish the task."
     ),

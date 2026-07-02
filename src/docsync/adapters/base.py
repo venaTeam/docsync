@@ -2,8 +2,9 @@
 
 An adapter encapsulates everything format-specific about a docs framework:
 how to read a page's frontmatter, what structural invariants must be preserved
-in an edit, and how to run the framework's own link/build checks. The MVP ships
-only `MintlifyAdapter`; this interface is the seam for Docusaurus/GitBook later.
+in an edit, and how to run the framework's own link/build checks. docsync ships
+`MintlifyAdapter`, `DocusaurusAdapter`, and a minimal `MarkdownAdapter`; this
+interface is the seam where a GitBook/MkDocs adapter would slot in next.
 """
 
 from __future__ import annotations
@@ -48,6 +49,31 @@ class DocAdapter(ABC):
         list of human-readable problems (empty == well-formed).
         """
         return []
+
+    def additive_safe_components(self) -> frozenset[str]:
+        """Leaf structural elements an edit may *add* (signature names, no slash).
+
+        `validate._check_structure` freezes structural counts by default, with one
+        carve-out: a leaf in this set may *increase* as long as its open and close
+        keys grow in lockstep (documenting a new field often means one more callout).
+        Containers stay frozen and decreases are always rejected. Default: empty —
+        a framework with no addable components inherits a fully frozen signature.
+        """
+        return frozenset()
+
+    def authoring_components_hint(self) -> str:
+        """A prompt fragment naming the framework's callout/structural syntax.
+
+        Consumed by the author (`bootstrap.py`), edit (`edits.py`), and polish
+        (`polish.py`) prompts so generated prose uses the right components/admonitions
+        for this framework and respects the balance rules the validator enforces.
+        Default: plain-Markdown guidance (no components).
+        """
+        return (
+            "This page is plain Markdown — do not add MDX components or callouts. "
+            "Use headings, tables, lists, and code fences only, and keep every code "
+            "and mermaid fence balanced."
+        )
 
     def repair_structure(self, text: str) -> str:
         """Best-effort fix for the *safe* problems `structural_problems` reports.

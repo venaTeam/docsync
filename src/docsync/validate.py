@@ -217,33 +217,25 @@ def _check_frontmatter(
 # ---------------------------------------------------------------------------
 
 
-# Leaf components an edit may *add* when the diff motivates it (documenting a new
-# field/route/stage often means one more <Step>/<Note>/<Card>). Their structural
-# containers (CardGroup/Steps/Tabs/AccordionGroup/CodeGroup/Frame) stay frozen — adding a
-# whole container is a real structural change — and *removing* any of these is always
-# rejected (a count decrease is a deletion). Mintlify-specific names; docsync ships only
-# the Mintlify adapter today.
-_ADDITIVE_SAFE_COMPONENTS = frozenset(
-    {"Card", "Warning", "Note", "Tip", "Info", "Step", "Accordion", "Tab"}
-)
 # Counts that must stay exactly equal — code/diagram fences are content, not chrome.
 _FROZEN_SIGNATURE_KEYS = ("fence_count", "mermaid_count")
 
 
 def _check_structure(original_text: str, new_text: str, adapter: DocAdapter) -> list[str]:
-    """Hold the MDX *shape* invariant, but permit additive component growth.
+    """Hold the structural *shape* invariant, but permit additive component growth.
 
-    Counts are frozen by default, with one carve-out for the edit path: a leaf component
-    in :data:`_ADDITIVE_SAFE_COMPONENTS` may *increase* (e.g. a new ``<Step>`` for a newly
-    documented pipeline stage) as long as its open and close tags grow in lockstep so the
-    page stays balanced — the well-formedness gate (:func:`_check_wellformed`) double-checks
-    nesting. Decreases (deletions), container growth, and any fence/mermaid change are still
-    rejected.
+    Counts are frozen by default, with one carve-out for the edit path: a leaf element in
+    the adapter's :meth:`~DocAdapter.additive_safe_components` set may *increase* (e.g. a
+    new ``<Step>`` for a newly documented stage, or a fresh ``:::note`` admonition) as long
+    as its open and close keys grow in lockstep so the page stays balanced — the
+    well-formedness gate (:func:`_check_wellformed`) double-checks nesting. Decreases
+    (deletions), container growth, and any fence/mermaid change are still rejected.
     """
     failures: list[str] = []
 
     old_sig = adapter.structural_signature(original_text)
     new_sig = adapter.structural_signature(new_text)
+    additive_safe = adapter.additive_safe_components()
 
     component_keys = (set(old_sig) | set(new_sig)) - set(_FROZEN_SIGNATURE_KEYS)
     for key in sorted(component_keys):
@@ -252,7 +244,7 @@ def _check_structure(original_text: str, new_text: str, adapter: DocAdapter) -> 
         if old_count == new_count:
             continue
         name = key[1:] if key.startswith("/") else key  # strip the close-tag slash
-        if name in _ADDITIVE_SAFE_COMPONENTS and new_count > old_count:
+        if name in additive_safe and new_count > old_count:
             # Additive growth — allow it only when opens and closes grew equally, so the
             # component stays balanced (a lone extra <Step> with no </Step> is rejected).
             open_delta = new_sig.get(name, 0) - old_sig.get(name, 0)
