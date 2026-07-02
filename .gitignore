@@ -14,7 +14,11 @@ dist/
 
 # docsync run history + dashboard (local/CI-artifact only — never committed into a docs PR)
 .docsync/state/runs.jsonl
+docs-docusaurus/.docsync/state/runs.jsonl
 docsync-dashboard.html
+
+# Bundled embedding model (87 MB of weights — shipped via the air-gapped wheelhouse, not git)
+src/docsync/_models/
 
 # docsync dry-run artifacts (the patch + report are inspection-only)
 *.patch
@@ -23,6 +27,12 @@ docsync-bootstrap.patch
 
 # Node (validation sidecar)
 node-validate/node_modules/
+
+# Docusaurus dogfood site — install/build artifacts only; the authored pages are committed
+# (`build/` above already covers docs-docusaurus/build/)
+docs-docusaurus/node_modules/
+docs-docusaurus/.docusaurus/
+docs-docusaurus/package-lock.json
 
 # Env
 .env
