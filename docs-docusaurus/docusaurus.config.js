@@ -13,6 +13,15 @@ const config = {
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/favicon.ico',
 
+  // Render ```mermaid fences (docsync authors them on architecture/concept pages).
+  // theme-mermaid compiles the mermaid library into the static bundle at build time
+  // and renders client-side — no CDN or other egress at runtime, so diagrams work
+  // in air-gapped deployments as long as npm installs from the internal mirror.
+  markdown: {
+    mermaid: true,
+  },
+  themes: ['@docusaurus/theme-mermaid'],
+
   presets: [
     [
       'classic',

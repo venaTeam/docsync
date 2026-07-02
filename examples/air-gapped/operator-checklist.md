@@ -20,6 +20,13 @@ A one-page runbook for standing docsync up in an on-prem **air-gapped** network:
 - [ ] Build a **runner image** for CI: base Python that matches the target, then
       `pip install "docsync[embeddings]"` from Artifactory, plus `git` and **`glab`**. Push it to
       the internal registry; reference it as `$DOCSYNC_RUNNER_IMAGE`.
+- [ ] **Docs site rendering (Docusaurus + mermaid):** docsync authors ```` ```mermaid ````
+      diagrams on architecture/concept pages. Mirror the docs site's npm dependencies into the
+      Artifactory **npm** repo — including `@docusaurus/theme-mermaid` — and enable it in
+      `docusaurus.config.js`: `markdown: { mermaid: true }` + `themes: ['@docusaurus/theme-mermaid']`.
+      Mermaid is compiled into the static bundle at **build time** and renders client-side, so the
+      built site needs no CDN or any other egress at runtime. On the air-gapped side, point npm at
+      the mirror (`npm config set registry https://artifactory.internal.example/api/npm/npm/`).
 
 ## Phase B — Configure offline + the gateway (on the air-gapped host)
 
@@ -54,3 +61,6 @@ A one-page runbook for standing docsync up in an on-prem **air-gapped** network:
       (`lsof -i` / firewall log). The **only** outbound host is the gateway. No `api.anthropic.com`,
       no `pypi.org`, no `huggingface.co`. `pip show docsync sentence-transformers torch` all
       resolve from Artifactory.
+- [ ] Docs site: `npm install && npm run build` hits **only** the Artifactory npm mirror (no
+      `registry.npmjs.org`, no CDN hosts), and mermaid diagrams render in the built site served
+      offline (`npm run serve` with networking blocked).
