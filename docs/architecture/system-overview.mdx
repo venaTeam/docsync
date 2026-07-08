@@ -163,6 +163,8 @@ def plan_docs(digests, docs_root, config, *, client, max_pages=None) -> tuple[Do
 
 It collects the routes and `.mdx`/`.md` paths that already exist on disk (`_existing_page_paths`, which skips anything under `.docsync`), feeds them into the prompt as "do not propose these", and then **drops any planned page that still collides** with an existing page/route or an earlier plan entry. `max_pages` is applied *after* dedupe, so the cap counts only real, new pages.
 
+An empty plan is never a valid outcome: because `DocPlan.pages` defaults to `[]`, a model that under-fills the schema would otherwise "succeed" into a silent 0-planned run. `plan_docs` instead raises a `RuntimeError` naming the judge model and pointing at the config / `DOCSYNC_LLM_DEBUG` knobs an operator behind a gateway needs to diagnose it.
+
 <Note>
 Concept and guide pages anchor to broad subsystem globs and carry `judge_required`. That flag is what lets `docsync run` keep narrative pages live without firing an edit on every unrelated change — a judge call decides whether the change actually matters to that page.
 </Note>

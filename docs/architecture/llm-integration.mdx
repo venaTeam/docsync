@@ -40,7 +40,7 @@ That is the whole interface. A stage builds a `system` block and a `messages` li
   </Card>
 </CardGroup>
 
-A backend selector — `get_client` — chooses between them, returning the production `anthropic.Anthropic()` client for real runs and the dev-only `ClaudeCodeClient` or `CursorClient` for local dogfooding. Whichever it returns, the calling stage code is identical, because all three honor the `messages.parse(...)` / `parsed_output` contract above.
+A backend selector — `get_client` — chooses between them, returning the production `anthropic.Anthropic()` client for real runs and the dev-only `ClaudeCodeClient` or `CursorClient` for local dogfooding. Which one it returns is set by the `backend` config field (default `api`, values `api` / `claude-code` / `cursor`) or the `--backend` CLI flag, which wins over config when both are given. Whichever it returns, the calling stage code is identical, because all three honor the `messages.parse(...)` / `parsed_output` contract above.
 
 ### Why the CLI backends are dev-only
 
@@ -64,14 +64,15 @@ cmd = [
     "--system-prompt", system,
     *self._extra_args,
 ]
-proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True)
+proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=_CLI_TIMEOUT_S)
 ```
 
 A few design choices are worth calling out:
 
 - **The user prompt is piped via STDIN**, not passed as a CLI argument — so a long or multiline prompt is never mis-parsed as flags.
 - **The system prompt replaces** Claude Code's default and forbids tools, so a pure JSON (or pure text) completion needs none.
-- The CLI's JSON envelope is parsed for `result` (the model's reply) and `usage` (token accounting, surfaced on the response so a metered client can account for it). A non-zero exit code or an `is_error` envelope is raised as a `RuntimeError`.
+- The CLI's JSON envelope is parsed for `result` (the model's reply) and `usage` (token accounting, surfaced on the response so a metered client can account for it). A non-zero exit code, an `is_error` envelope, or non-JSON stdout is raised as a `RuntimeError`.
+- Each call is capped at 600s (`_CLI_TIMEOUT_S`), so a hung CLI (e.g. one blocking on an interactive login prompt) fails the call instead of stalling a pipeline worker forever.
 
 `parse()` then branches on the **shape of the output model**, because two very different kinds of output need different handling.
 
@@ -98,7 +99,7 @@ A few design choices are worth calling out:
             user_text += "\n\nYour previous reply was not valid JSON ..."
     ```
 
-    `_extract_json` pulls the object out of the reply, tolerating ```` ```json ```` fences and surrounding prose before falling back to the first `{` … last `}` span. After two failed attempts it raises.
+    `_extract_json` pulls the object out of the reply, tolerating ```` ```json ```` fences, then scans from the first `{` with brace/string awareness so trailing prose — which may itself contain stray braces — can't be swept into the candidate (as an old first-`{` … last-`}` slice would). An unterminated object raises; after two failed attempts the call raises.
   </Tab>
   <Tab title="Whole-document output">
     `_single_text_field` detects "whole-document" models — those whose **sole required field is a `str`** (e.g. an authored page whose only field is `content`). Coaxing a full MDX document *inside JSON* is fragile: the document itself contains braces, quotes, and code fences. So for these the client takes the **raw reply as the field value** instead of parsing JSON, and only strips an outer ```` ``` ```` fence that wraps the *entire* reply:
@@ -117,6 +118,10 @@ A few design choices are worth calling out:
 </Tabs>
 
 The `_system_text` and `_user_text` helpers flatten the SDK's structured `system` (a string or a list of text blocks) and `messages` arguments down to the plain strings the CLI expects, discarding the cache-control metadata the API would otherwise use.
+
+<Note>
+Some gateway-served models (MiniMax / DeepSeek-R1 style) emit `<think>`/`<thinking>` reasoning **inline** in the text reply. Both CLI backends run every reply through `_strip_reasoning` before extraction, so those blocks — and the braces inside them — can't corrupt JSON parsing or land in an authored page; a reply that is *only* an unterminated reasoning block strips to empty and triggers the retry. Set `DOCSYNC_LLM_DEBUG=<dir>` to capture each call's command, prompt, and raw stdout/stderr — the only window into what an opaque gateway-served model actually returned.
+</Note>
 
 ## How `CursorClient` differs
 

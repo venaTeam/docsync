@@ -181,7 +181,7 @@ The run-level summary returned by `finalize()`.
 
 ### `MeteredClient`
 
-A drop-in proxy around any client exposing `.messages.parse`. It substitutes anywhere the real `anthropic.Anthropic()` (or `ClaudeCodeClient`) is used.
+A drop-in proxy around any client exposing `.messages.parse`. It substitutes anywhere the real `anthropic.Anthropic()` (or a dev CLI backend — `ClaudeCodeClient`, `CursorClient`) is used.
 
 ```python
 def __init__(self, inner: Any, meter: UsageMeter) -> None

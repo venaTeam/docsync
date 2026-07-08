@@ -93,7 +93,7 @@ The anchoring distinction is the engine's core IA idea. Reference pages bind tig
     `_existing_page_paths(docs_root)` walks the docs tree for every `.mdx`/`.md` (skipping anything under `.docsync`), and the adapter's `nav_routes()` returns the extensionless routes. Both feed the prompt's "do not propose these" block.
   </Step>
   <Step title="One structured planner call">
-    Through the shared `llm.parse` helper (metered under the `"plan"` stage), the client `parse`s the response into a `DocPlan` (`output_format=DocPlan`, capped at `_PLAN_MAX_TOKENS` = 6,000). The model is forced into the schema, so no brittle text parsing is needed.
+    Through the shared `llm.parse` helper (metered under the `"plan"` stage), the client `parse`s the response into a `DocPlan` (`output_format=DocPlan`, capped at `_PLAN_MAX_TOKENS` = 6,000). The model is forced into the schema, so no brittle text parsing is needed. An **empty plan is rejected**: because `DocPlan.pages` defaults to `[]`, a model that under-fills the schema would otherwise "succeed" into a silent 0-planned run, so `plan_docs` raises a `RuntimeError` naming the judge model and pointing at the config/`DOCSYNC_LLM_DEBUG` knobs an operator behind a gateway needs.
   </Step>
   <Step title="Dedupe collisions and cap">
     The raw plan is filtered: any planned page whose path or route collides with an existing page/route — or with an earlier entry in the same plan — is dropped. `max_pages`, if given, caps the count **after** dedupe.

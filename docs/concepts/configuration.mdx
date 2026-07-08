@@ -98,6 +98,9 @@ max_pages_per_run: 0
   <Step title="Models & effort">
     `edit_model` drives the page-editing stage, `judge_model` the evaluation stage, and `edit_effort` tunes how hard the editor works. Defaults come from the `ModelConfig` model — leave them unless you have a reason to override.
   </Step>
+  <Step title="LLM backend">
+    `backend` selects which LLM backend serves every stage: `"api"` (default — uses `ANTHROPIC_API_KEY`), `"claude-code"` (dev: shells to the local `claude` CLI, reusing your Claude Code auth), or `"cursor"` (dev: shells to the Cursor CLI `cursor-agent`, via `cursor-agent login` or `CURSOR_API_KEY`). The two CLI backends are for local dogfooding only; `cursor` reports no token usage, so cost metering is unavailable on its runs. The `--backend` CLI flag overrides this config value.
+  </Step>
   <Step title="Cost & throughput thresholds">
     Three settings bound how much work — and spend — a single run can incur:
     - `max_parallel_requests` caps concurrent LLM calls across the judge **and** edit stages.
