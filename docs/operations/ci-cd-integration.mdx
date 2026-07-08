@@ -37,7 +37,8 @@ docsync is dogfooded as the `docsync` CLI and wrapped by an `action.yml`. The ex
 
     | Backend | Use it for | Requires |
     | --- | --- | --- |
-    | `api` (default) | CI | `ANTHROPIC_API_KEY` |
+    | `api` (default) | CI (native structured outputs; real Anthropic endpoints) | `ANTHROPIC_API_KEY` |
+    | `gateway` | Anthropic-compatible gateways serving non-Anthropic models (prompted JSON validated locally) | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` |
     | `claude-code` | Local dev | Local Claude Code CLI auth (no API key) |
     | `cursor` | Local dev | The Cursor CLI (`cursor-agent login` or `CURSOR_API_KEY`) |
 
