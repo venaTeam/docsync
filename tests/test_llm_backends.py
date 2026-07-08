@@ -7,7 +7,7 @@ import json
 import pytest
 
 from docsync import llm_backends as be
-from docsync.models import AuthoredPage, JudgeVerdict
+from docsync.models import AuthoredPage, DocPlan, JudgeVerdict
 
 
 def test_extract_json_handles_fences_and_prose():
@@ -94,7 +94,7 @@ def test_parse_retries_then_raises_on_bad_json(monkeypatch):
             output_format=JudgeVerdict, system="s",
             messages=[{"role": "user", "content": "q"}],
         )
-    assert attempts["n"] == 2  # one retry
+    assert attempts["n"] == 3  # two retries
 
 
 def test_single_text_field_detection():
@@ -235,6 +235,168 @@ def test_get_client_unknown_backend():
         be.get_client("nope")
 
 
+# --- near-miss salvage (weak-schema models) --------------------------------------
+
+# The exact wrapper shape observed from MiniMax behind an Anthropic-compatible
+# gateway: the real pages exist, nested under invented keys and split by section.
+_WRONG_SCHEMA_PLAN = {
+    "platform": "keep",
+    "docPlan": {
+        "getting-started": {"pages": [
+            {"page_path": "getting-started/introduction.mdx", "title": "Introduction",
+             "kind": "guide", "section": "Getting Started"},
+        ]},
+        "reference": {"pages": [
+            {"page_path": "reference/alerts.mdx", "title": "Alerts API",
+             "kind": "reference", "section": "Reference"},
+        ]},
+    },
+    "total_pages": 36,
+}
+
+
+def test_salvage_harvests_pages_across_invented_sections():
+    plan = be._salvage(_WRONG_SCHEMA_PLAN, DocPlan)
+    assert plan is not None
+    # BOTH sections' pages are collected — a first-nested-match would keep only one.
+    assert [p.page_path for p in plan.pages] == [
+        "getting-started/introduction.mdx", "reference/alerts.mdx",
+    ]
+    assert plan.pages[0].kind == "guide" and plan.pages[1].kind == "reference"
+
+
+def test_salvage_finds_nested_dict_for_non_collection_models():
+    wrapped = {"result": {"page_path": "p.mdx", "affected": True,
+                          "confidence": 0.7, "reason": "r"}}
+    verdict = be._salvage(wrapped, JudgeVerdict)
+    assert verdict is not None and verdict.affected is True
+
+
+def test_salvage_returns_none_on_unrescuable_json():
+    assert be._salvage({"totally": "unrelated"}, DocPlan) is None
+    assert be._salvage({"nested": {"also": "unrelated"}}, JudgeVerdict) is None
+
+
+def test_parse_json_salvages_wrong_schema_reply(monkeypatch):
+    # Attempt 1: the JSON instruction is ignored outright (markdown). Attempt 2:
+    # JSON in a hallucinated wrapper shape — salvage must rescue it, no third call.
+    replies = iter([
+        "# Documentation Plan\n\n## Getting Started\n- introduction\n",
+        json.dumps(_WRONG_SCHEMA_PLAN),
+    ])
+    attempts = {"n": 0}
+
+    def fake_run(cmd, input, **kwargs):
+        attempts["n"] += 1
+        return type("P", (), {"returncode": 0, "stdout": _fake_envelope(next(replies)),
+                              "stderr": ""})()
+
+    monkeypatch.setattr(be.subprocess, "run", fake_run)
+    monkeypatch.setattr(be.shutil, "which", lambda _: "/usr/bin/claude")
+    client = be.ClaudeCodeClient()
+    resp = client.messages.parse(
+        output_format=DocPlan, system="plan", messages=[{"role": "user", "content": "q"}]
+    )
+    assert attempts["n"] == 2
+    assert {p.page_path for p in resp.parsed_output.pages} == {
+        "getting-started/introduction.mdx", "reference/alerts.mdx",
+    }
+
+
+def test_json_prompt_names_top_level_keys_and_feeds_back_errors(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, input, **kwargs):
+        calls.append((cmd, input))
+        return type("P", (), {"returncode": 0, "stdout": _fake_envelope("not json"),
+                              "stderr": ""})()
+
+    monkeypatch.setattr(be.subprocess, "run", fake_run)
+    monkeypatch.setattr(be.shutil, "which", lambda _: "/usr/bin/claude")
+    client = be.ClaudeCodeClient()
+    with pytest.raises(RuntimeError):
+        client.messages.parse(
+            output_format=DocPlan, system="s", messages=[{"role": "user", "content": "q"}]
+        )
+    # The system prompt spells out the exact top-level keys, not just the schema.
+    first_cmd = calls[0][0]
+    system_arg = first_cmd[first_cmd.index("--system-prompt") + 1]
+    assert 'exactly the key(s): "pages"' in system_arg
+    # The retry user prompt carries the actual failure, not a bare "not valid JSON".
+    assert "did not validate" in calls[1][1]
+
+
+# --- gateway backend (Anthropic SDK transport, prompted JSON) ---------------------
+
+
+class _FakeSdkClient:
+    """Stub for `anthropic.Anthropic()`: `.messages.create` pops scripted replies."""
+
+    def __init__(self, replies: list[str], usage=None):
+        self._replies = list(replies)
+        self._usage = usage
+        self.calls: list[dict] = []
+        self.messages = self  # expose .messages.create on the same object
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        block = type("B", (), {"type": "text", "text": self._replies.pop(0)})()
+        return type("R", (), {"content": [block], "usage": self._usage})()
+
+
+def test_gateway_parse_returns_validated_output():
+    sdk = _FakeSdkClient(
+        ['{"page_path":"p.mdx","affected":true,"confidence":0.8,"reason":"r"}'],
+        usage={"input_tokens": 10, "output_tokens": 5},
+    )
+    client = be.GatewayClient(client=sdk)
+    resp = client.messages.parse(
+        output_format=JudgeVerdict,
+        model="minimax-2.7",
+        system=[{"type": "text", "text": "judge"}],
+        messages=[{"role": "user", "content": "is it affected?"}],
+        max_tokens=1234,
+        thinking={"type": "adaptive"},  # extra kwargs must be ignored
+    )
+    assert isinstance(resp.parsed_output, JudgeVerdict)
+    assert resp.usage == {"input_tokens": 10, "output_tokens": 5}
+    call = sdk.calls[0]
+    # The model id passes through verbatim; max_tokens is threaded to create().
+    assert call["model"] == "minimax-2.7" and call["max_tokens"] == 1234
+    assert "judge" in call["system"] and "is it affected?" in call["messages"][0]["content"]
+
+
+def test_gateway_defaults_max_tokens_when_parse_omits_it():
+    sdk = _FakeSdkClient(['{"page_path":"p.mdx","affected":false,"confidence":0.1,"reason":"r"}'])
+    be.GatewayClient(client=sdk).messages.parse(
+        output_format=JudgeVerdict, system="s", messages=[{"role": "user", "content": "q"}]
+    )
+    assert sdk.calls[0]["max_tokens"] == be._SdkMessages._DEFAULT_MAX_TOKENS
+
+
+def test_gateway_whole_document_path():
+    page = "---\ntitle: X\ndescription: y\n---\n\nBody text here.\n"
+    sdk = _FakeSdkClient([f"<think>outline</think>\n```mdx\n{page}\n```"])
+    resp = be.GatewayClient(client=sdk).messages.parse(
+        output_format=AuthoredPage, system="s", messages=[{"role": "user", "content": "q"}]
+    )
+    assert resp.parsed_output.content == page.strip()
+
+
+def test_gateway_retries_then_raises_on_prose():
+    sdk = _FakeSdkClient(["# markdown, not JSON"] * 3)
+    with pytest.raises(RuntimeError, match="gateway"):
+        be.GatewayClient(client=sdk).messages.parse(
+            output_format=JudgeVerdict, system="s", messages=[{"role": "user", "content": "q"}]
+        )
+    assert len(sdk.calls) == 3
+
+
+def test_get_client_gateway_returns_gateway_client(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert isinstance(be.get_client("gateway"), be.GatewayClient)
+
+
 # --- cursor backend -------------------------------------------------------------
 
 
@@ -322,7 +484,7 @@ def test_cursor_retries_then_raises_on_bad_json(monkeypatch):
             output_format=JudgeVerdict, system="s",
             messages=[{"role": "user", "content": "q"}],
         )
-    assert attempts["n"] == 2  # one retry
+    assert attempts["n"] == 3  # two retries
 
 
 def test_cursor_nonzero_exit_raises(monkeypatch):

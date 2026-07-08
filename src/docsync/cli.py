@@ -37,13 +37,15 @@ def _apply_thoroughness(config, value: Optional[str]) -> None:
     config.thoroughness = value
 
 
-_BACKENDS = ("api", "claude-code", "cursor")
+_BACKENDS = ("api", "gateway", "claude-code", "cursor")
 
 # Help text shared by every command's --backend option. "the Cursor CLI
 # (`cursor-agent`)" is spelled out to avoid confusion with docsync's sync cursor.
 _BACKEND_HELP = (
-    "LLM backend: 'api' (ANTHROPIC_API_KEY), 'claude-code' (dev: reuse the local "
-    "Claude Code CLI auth), or 'cursor' (dev: the Cursor CLI `cursor-agent`). "
+    "LLM backend: 'api' (ANTHROPIC_API_KEY, native structured outputs), 'gateway' "
+    "(same env vars, prompted JSON — for Anthropic-compatible gateways serving "
+    "non-Anthropic models), 'claude-code' (dev: reuse the local Claude Code CLI "
+    "auth), or 'cursor' (dev: the Cursor CLI `cursor-agent`). "
     "Overrides config.backend (default 'api')."
 )
 

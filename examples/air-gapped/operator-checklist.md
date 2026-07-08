@@ -5,9 +5,11 @@ A one-page runbook for standing docsync up in an on-prem **air-gapped** network:
 **GitLab**. Hand this to whoever owns the environment. Companion files in this folder:
 `build-airgap-bundle.sh` (builds the offline bundle) and `gitlab-ci.yml` (the pipeline).
 
-> Why this works with no code change: docsync's `api` backend is a bare `anthropic.Anthropic()`,
-> which honors `ANTHROPIC_BASE_URL`. Embeddings accept a local model path. GitLab MRs open
-> natively via `glab` (`forge: gitlab`). See `references/air-gapped-setup.md` in the skill for detail.
+> Why this works with no code change: docsync's `api` and `gateway` backends are the plain
+> Anthropic SDK, which honors `ANTHROPIC_BASE_URL` (`gateway` = same transport, but prompted
+> JSON for gateways serving non-Anthropic models). Embeddings accept a local model path. GitLab
+> MRs open natively via `glab` (`forge: gitlab`). See `references/air-gapped-setup.md` in the
+> skill for detail.
 
 ## Phase A — Build & publish the offline bundle (on a CONNECTED host)
 
@@ -35,9 +37,16 @@ A one-page runbook for standing docsync up in an on-prem **air-gapped** network:
 - [ ] Stage the model and force offline in the docs repo `.docsync/config.yml`:
       `embedding_model: /opt/docsync/models/all-MiniLM-L6-v2`, and export
       `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HOME=/opt/docsync/hf-cache`.
-- [ ] Wire the gateway: `ANTHROPIC_BASE_URL=<internal>`, `ANTHROPIC_API_KEY=<token>`; keep
-      `--backend api`. If the gateway renames models, override `models.edit_model` /
-      `models.judge_model` in config.yml to the IDs it serves.
+- [ ] Wire the gateway: `ANTHROPIC_BASE_URL=<internal>`, `ANTHROPIC_API_KEY=<token>`. Pick
+      the backend by what the gateway **serves**: real Anthropic models → keep
+      `--backend api` (native structured outputs); a non-Anthropic model behind the
+      Anthropic wire format (MiniMax, DeepSeek, …) → set `backend: gateway` in config.yml
+      (same transport/env vars, but docsync prompts for JSON and validates locally —
+      such gateways don't enforce `output_format`, so `api` fails with ValidationError).
+      If the gateway renames models, override `models.edit_model` / `models.judge_model`
+      in config.yml to the IDs it serves.
+- [ ] If a structured stage still misbehaves, export `DOCSYNC_LLM_DEBUG=/tmp/docsync-llm`
+      (gateway + CLI backends) — every call's prompt and raw reply lands there.
 - [ ] Set `forge: gitlab` in the **docs repo** `.docsync/config.yml` (or rely on `auto` if the
       docs origin URL contains "gitlab").
 

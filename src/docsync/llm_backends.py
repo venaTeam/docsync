@@ -7,12 +7,15 @@ of the Anthropic client surface:
                                  output_format=SomePydanticModel, **ignored)
     resp.parsed_output          # a validated SomePydanticModel instance
 
-The production backend is `anthropic.Anthropic()`. This module adds two **dev-only**
-backends that satisfy the same interface by shelling out to a local CLI in headless
-mode: `ClaudeCodeClient` over the `claude` CLI (`claude -p --output-format json`,
-reusing your Claude Code authentication) and `CursorClient` over the Cursor CLI
-(`cursor-agent -p --output-format json`, reusing your Cursor subscription /
-CURSOR_API_KEY). Either lets you run the full pipeline WITHOUT an ANTHROPIC_API_KEY.
+The production backend is `anthropic.Anthropic()`. This module adds three more that
+satisfy the same interface without native structured outputs — they *prompt* for the
+schema and validate locally: `GatewayClient` over the Anthropic SDK transport (for
+Anthropic-compatible gateways serving non-Anthropic models, which don't enforce
+`output_format`), and two **dev-only** CLI backends — `ClaudeCodeClient` over the
+`claude` CLI (`claude -p --output-format json`, reusing your Claude Code
+authentication) and `CursorClient` over the Cursor CLI (`cursor-agent -p
+--output-format json`, reusing your Cursor subscription / CURSOR_API_KEY). The CLI
+pair runs the full pipeline WITHOUT an ANTHROPIC_API_KEY.
 
 Caveats (why these are dev-only, not the product path):
   * No schema-enforced structured outputs — we prompt for JSON and validate with
@@ -35,7 +38,7 @@ import subprocess
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel, ValidationError
 
@@ -176,6 +179,88 @@ def _unwrap_outer_fence(text: str) -> str:
     return (m.group(1) if m else text).strip()
 
 
+def _iter_dicts(node: Any):
+    """Yield every dict in a parsed-JSON tree, depth-first in document order."""
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _iter_dicts(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _iter_dicts(value)
+
+
+def _harvest_target(model: type[BaseModel]) -> tuple[str, type[BaseModel]] | None:
+    """(field, item model) when `model` has exactly one list-of-BaseModel field.
+
+    Identifies "collection" output models like `DocPlan(pages: list[PlannedPage])`,
+    whose payload can be harvested item-by-item out of a wrong-shaped reply.
+    """
+    hits: list[tuple[str, type[BaseModel]]] = []
+    for name, field in model.model_fields.items():
+        if get_origin(field.annotation) is list:
+            (item,) = get_args(field.annotation) or (None,)
+            if isinstance(item, type) and issubclass(item, BaseModel):
+                hits.append((name, item))
+    return hits[0] if len(hits) == 1 else None
+
+
+def _salvage(data: Any, output_format: type[BaseModel]) -> BaseModel | None:
+    """Rescue a near-miss reply: valid JSON whose *shape* wandered off the schema.
+
+    Weak-schema models behind a gateway return the right payload under invented
+    wrappers/nesting (observed: ``{"platform": …, "docPlan": {"getting-started":
+    {"pages": […]}}, "total_pages": …}`` for a ``DocPlan``). For collection models
+    (one list-of-BaseModel field) harvest every dict anywhere in the tree that
+    validates as the item model — this collects across ALL invented sections, where
+    a first-nested-match would keep only one. Other models fall back to the first
+    nested dict that validates whole. Returns None when nothing salvages.
+    """
+    target = _harvest_target(output_format)
+    if target is not None:
+        field, item_model = target
+        items: list[BaseModel] = []
+        seen: set[str] = set()
+        for node in _iter_dicts(data):
+            try:
+                item = item_model.model_validate(node)
+            except ValidationError:
+                continue
+            key = item.model_dump_json()
+            if key not in seen:
+                seen.add(key)
+                items.append(item)
+        if items:
+            try:
+                return output_format.model_validate({field: [i.model_dump() for i in items]})
+            except ValidationError:
+                return None
+        return None
+    for node in _iter_dicts(data):
+        if node is data:
+            continue
+        try:
+            return output_format.model_validate(node)
+        except ValidationError:
+            continue
+    return None
+
+
+def _empty_collection(obj: BaseModel, output_format: type[BaseModel]) -> bool:
+    """True when a collection model validated with its list field empty."""
+    target = _harvest_target(output_format)
+    return target is not None and not getattr(obj, target[0])
+
+
+def _salvage_text(candidate: str, output_format: type[BaseModel]):
+    """`_salvage` over a raw JSON candidate string; None when it isn't parseable JSON."""
+    try:
+        data = json.loads(candidate)
+    except ValueError:
+        return None
+    return _salvage(data, output_format)
+
+
 # Raw-reply observability for opaque gateways: when DOCSYNC_LLM_DEBUG names a
 # directory, every CLI call's command, prompt, and raw stdout/stderr is written
 # there — the only way to see what a gateway-served model actually returned when
@@ -185,7 +270,7 @@ _dump_lock = threading.Lock()
 _dump_seq = 0
 
 
-def _dump_call(label: str, cmd: list[str], prompt: str, proc: Any) -> None:
+def _dump_call(label: str, request: str, prompt: str, output: str, errors: str = "") -> None:
     dump_dir = os.environ.get(_DEBUG_DIR_ENV)
     if not dump_dir:
         return
@@ -197,13 +282,10 @@ def _dump_call(label: str, cmd: list[str], prompt: str, proc: Any) -> None:
         out = Path(dump_dir)
         out.mkdir(parents=True, exist_ok=True)
         body = (
-            f"# {label} call {seq}\n\n"
-            f"command: {json.dumps(cmd)}\n"
-            f"returncode: {proc.returncode}\n\n"
-            f"## prompt (stdin)\n{prompt}\n\n"
-            f"## stdout\n{proc.stdout}\n\n"
-            f"## stderr\n{proc.stderr}\n"
-        )
+            f"# {label} call {seq}\n\n{request}\n\n"
+            f"## prompt\n{prompt}\n\n"
+            f"## output\n{output}\n"
+        ) + (f"\n## stderr\n{errors}\n" if errors else "")
         (out / f"call-{seq:03d}.txt").write_text(body, encoding="utf-8")
     except OSError:
         pass
@@ -224,10 +306,12 @@ class _Messages:
         self._cli = cli
         self._extra_args = extra_args
 
-    def _run(self, model: str, system: str, prompt: str) -> tuple[str, Any]:
+    def _run(self, model: str, system: str, prompt: str,
+             max_tokens: int | None = None) -> tuple[str, Any]:
         # Replace Claude Code's default prompt; pass the user prompt via STDIN so a
         # long/multiline prompt is never mis-parsed as CLI args. The system prompt
-        # already forbids tools, so a pure JSON completion needs none.
+        # already forbids tools, so a pure JSON completion needs none. `max_tokens`
+        # is unused here — the CLI has no such flag; the SDK transport needs it.
         cmd = [
             self._cli, "-p",
             "--output-format", "json",
@@ -246,7 +330,11 @@ class _Messages:
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"{self._label} timed out after {_CLI_TIMEOUT_S}s")
-        _dump_call(self._label, cmd, prompt, proc)
+        _dump_call(
+            self._label,
+            f"command: {json.dumps(cmd)}\nreturncode: {proc.returncode}",
+            prompt, proc.stdout, errors=proc.stderr,
+        )
         if proc.returncode != 0:
             raise RuntimeError(f"{self._label} failed ({proc.returncode}): {proc.stderr.strip()}")
         try:
@@ -258,38 +346,66 @@ class _Messages:
         return envelope.get("result", ""), envelope.get("usage")
 
     def parse(self, *, output_format: type[BaseModel], model: str | None = None,
-              system: Any = None, messages: Any = None, **_ignored: Any) -> _Resp:
-        """Mimic anthropic .messages.parse(..., output_format=Model) via the CLI."""
+              system: Any = None, messages: Any = None, max_tokens: int | None = None,
+              **_ignored: Any) -> _Resp:
+        """Mimic anthropic .messages.parse(..., output_format=Model), prompted."""
         mdl = model or self._default_model or "claude-opus-4-8"
         text_field = _single_text_field(output_format)
         if text_field is not None:
-            return self._parse_text(output_format, text_field, mdl, system, messages)
-        return self._parse_json(output_format, mdl, system, messages)
+            return self._parse_text(output_format, text_field, mdl, system, messages, max_tokens)
+        return self._parse_json(output_format, mdl, system, messages, max_tokens)
 
-    def _parse_json(self, output_format, mdl, system, messages) -> _Resp:
-        """Structured (multi-field) outputs: prompt for one JSON object, validate it."""
+    def _parse_json(self, output_format, mdl, system, messages, max_tokens=None) -> _Resp:
+        """Structured (multi-field) outputs: prompt for one JSON object, validate it.
+
+        Weak-schema models need more than the schema: the exact top-level keys are
+        spelled out (invented wrappers are the dominant failure), a validation miss
+        feeds the actual error back into the retry, and a reply that is valid JSON
+        in the wrong shape goes through `_salvage` before burning a retry.
+        """
         schema = json.dumps(output_format.model_json_schema(), separators=(",", ":"))
+        keys = ", ".join(f'"{k}"' for k in output_format.model_json_schema().get("properties", {}))
         sys_text = (
             _system_text(system)
             + "\n\nYou are a JSON API. Respond with ONLY a single JSON object that "
             "validates against the schema below — no prose, no code fences, no tools.\n"
+            f"The top-level object must have exactly the key(s): {keys}. Do NOT invent "
+            "other keys, wrapper objects, or extra nesting.\n"
             f"JSON schema: {schema}"
         )
         user_text = _user_text(messages)
 
         last_err: Exception | None = None
-        for _ in range(2):  # one retry on a parse/validation miss
-            raw, usage = self._run(mdl, sys_text, user_text)
+        for _ in range(3):  # two retries on a parse/validation miss
+            raw, usage = self._run(mdl, sys_text, user_text, max_tokens)
+            cleaned = _strip_reasoning(raw)
+            obj = None
             try:
-                obj = output_format.model_validate_json(_extract_json(_strip_reasoning(raw)))
-                return _Resp(obj, usage=usage)
-            except (ValueError, ValidationError) as exc:
-                last_err = exc
-                user_text += "\n\nYour previous reply was not valid JSON for the schema. " \
-                             "Return ONLY the JSON object."
+                candidate = _extract_json(cleaned)
+            except ValueError as exc:
+                candidate, last_err = None, exc
+            if candidate is not None:
+                try:
+                    obj = output_format.model_validate_json(candidate)
+                except ValidationError as exc:
+                    last_err = exc
+                # Salvage when validation missed — and ALSO when it "succeeded" with an
+                # empty collection: extra keys are ignored and list fields default, so a
+                # hallucinated wrapper shape validates as an empty DocPlan while the real
+                # items sit nested inside the reply.
+                if obj is None or _empty_collection(obj, output_format):
+                    rescued = _salvage_text(candidate, output_format)
+                    if rescued is not None:
+                        return _Resp(rescued, usage=usage)
+                if obj is not None:
+                    return _Resp(obj, usage=usage)
+            user_text += (
+                f"\n\nYour previous reply did not validate: {str(last_err)[:300]}\n"
+                f"Return ONLY one JSON object whose top-level key(s) are exactly: {keys}."
+            )
         raise RuntimeError(f"{self._label} did not return schema-valid JSON: {last_err}")
 
-    def _parse_text(self, output_format, field, mdl, system, messages) -> _Resp:
+    def _parse_text(self, output_format, field, mdl, system, messages, max_tokens=None) -> _Resp:
         """Whole-document output: take the raw reply as the single string field.
 
         The model returns the document directly (not JSON), so a full MDX page with
@@ -306,7 +422,7 @@ class _Messages:
 
         last_err: Exception | None = None
         for _ in range(2):
-            raw, usage = self._run(mdl, sys_text, user_text)
+            raw, usage = self._run(mdl, sys_text, user_text, max_tokens)
             content = _unwrap_outer_fence(_strip_reasoning(raw))
             try:
                 if not content.strip():
@@ -330,7 +446,8 @@ class _CursorMessages(_Messages):
         super().__init__(default_model, cli, extra_args)
         self._workdir = workdir
 
-    def _run(self, model: str, system: str, prompt: str) -> tuple[str, Any]:
+    def _run(self, model: str, system: str, prompt: str,
+             max_tokens: int | None = None) -> tuple[str, Any]:
         # Never pass --force (it auto-approves the agent's commands); run in the
         # client's empty temp cwd so there is no workspace to read or edit. Prompt
         # via STDIN, as with the claude backend (print mode is inferred from the
@@ -344,6 +461,59 @@ class _CursorMessages(_Messages):
         full_prompt = f"<system-instructions>\n{system}\n</system-instructions>\n\n{prompt}"
         text, _ = self._invoke(cmd, full_prompt, cwd=self._workdir)
         return text, None  # Cursor's envelope carries no usage
+
+
+class _SdkMessages(_Messages):
+    """Anthropic-SDK transport for the prompted-JSON engine (the `gateway` backend).
+
+    Plain `messages.create` completions — no native structured outputs, no CLI
+    process. Inherits the whole prompted parse machinery (schema + top-level-keys
+    prompt, reasoning stripping, salvage, error-informed retries) from `_Messages`.
+    """
+
+    _label = "gateway"
+    _DEFAULT_MAX_TOKENS = 8192  # `messages.create` requires max_tokens; parse may omit it
+
+    def __init__(self, default_model: str | None, client: Any):
+        self._default_model = default_model
+        self._client = client
+
+    def _run(self, model: str, system: str, prompt: str,
+             max_tokens: int | None = None) -> tuple[str, Any]:
+        resp = self._client.messages.create(
+            model=model,
+            max_tokens=max_tokens or self._DEFAULT_MAX_TOKENS,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(
+            getattr(block, "text", "")
+            for block in resp.content
+            if getattr(block, "type", "text") == "text"
+        )
+        _dump_call(self._label, f"model: {model}", prompt, text)
+        return text, getattr(resp, "usage", None)
+
+
+class GatewayClient:
+    """Backend for Anthropic-compatible gateways serving NON-Anthropic models.
+
+    Same transport and env wiring as the `api` backend (`anthropic.Anthropic()`,
+    honoring ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY) but structured output is
+    *prompted* and validated locally instead of relying on the API's native
+    `output_format` enforcement — which such gateways typically don't implement
+    (the served model returns prose or near-miss JSON and the SDK-side validation
+    fails). Use `api` for real Anthropic endpoints; `gateway` when the endpoint
+    serves e.g. MiniMax/DeepSeek behind the Anthropic wire format.
+    """
+
+    def __init__(self, default_model: str | None = None, client: Any = None):
+        if client is None:
+            import anthropic
+
+            client = anthropic.Anthropic()
+        self._client = client
+        self.messages = _SdkMessages(default_model, client)
 
 
 class ClaudeCodeClient:
@@ -388,14 +558,18 @@ class CursorClient:
 
 
 def get_client(backend: str):
-    """Factory: 'api' -> anthropic.Anthropic(); 'claude-code' -> ClaudeCodeClient();
-    'cursor' -> CursorClient()."""
+    """Factory: 'api' -> anthropic.Anthropic(); 'gateway' -> GatewayClient();
+    'claude-code' -> ClaudeCodeClient(); 'cursor' -> CursorClient()."""
     if backend == "claude-code":
         return ClaudeCodeClient()
     if backend == "cursor":
         return CursorClient()
+    if backend == "gateway":
+        return GatewayClient()
     if backend == "api":
         import anthropic
 
         return anthropic.Anthropic()
-    raise ValueError(f"unknown backend: {backend!r} (use 'api', 'claude-code', or 'cursor')")
+    raise ValueError(
+        f"unknown backend: {backend!r} (use 'api', 'gateway', 'claude-code', or 'cursor')"
+    )
