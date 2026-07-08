@@ -62,6 +62,11 @@ def test_load_config_backend_field(tmp_path: Path):
     assert load_config(docs).backend == "cursor"
 
 
+def test_load_config_backend_gateway(tmp_path: Path):
+    docs = _write_config(tmp_path, "backend: gateway\n")
+    assert load_config(docs).backend == "gateway"
+
+
 def test_load_config_frames_bad_backend(tmp_path: Path):
     docs = _write_config(tmp_path, "backend: nope\n")
     with pytest.raises(ConfigError) as exc:

@@ -221,6 +221,12 @@ def test_backend_flag_overrides_config(tmp_path: Path, monkeypatch):
     assert captured["backend"] == "cursor"
 
 
+def test_backend_flag_accepts_gateway(tmp_path: Path, monkeypatch):
+    result, captured = _backend_smoke(tmp_path, monkeypatch, ["--backend", "gateway"])
+    assert result.exit_code == 0, result.output
+    assert captured["backend"] == "gateway"
+
+
 def test_backend_flag_rejects_unknown_value(tmp_path: Path, monkeypatch):
     result, captured = _backend_smoke(tmp_path, monkeypatch, ["--backend", "bogus"])
     assert result.exit_code != 0
