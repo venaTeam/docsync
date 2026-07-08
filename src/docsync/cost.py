@@ -10,7 +10,9 @@ changes to the individual call sites.
 Prices are a built-in estimate (USD per *million* tokens) and can drift from your
 real Anthropic bill, so `RunUsage.estimated` is always True. Update `PRICING` when
 rates change. Both response shapes are handled: the SDK's `usage` object (attribute
-access) and the `claude-code` CLI envelope's `usage` dict.
+access) and the `claude-code` CLI envelope's `usage` dict. The `cursor` backend
+returns no usage at all, so its calls meter as zero and the cost section is simply
+omitted from reports.
 """
 
 from __future__ import annotations

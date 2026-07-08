@@ -89,7 +89,7 @@ Returns the estimated USD for a **single** response's `usage` under `model`'s pr
 ) / 1_000_000
 ```
 
-The `usage` argument may be either an SDK `usage` object (attribute access) or a `claude-code` CLI envelope's `usage` dict — both shapes are handled. Missing or `None` token counts read as `0`.
+The `usage` argument may be either an SDK `usage` object (attribute access) or a `claude-code` CLI envelope's `usage` dict — both shapes are handled. Missing or `None` token counts read as `0`. The `cursor` backend returns no usage at all, so its calls record nothing and reports omit the cost section.
 
 ### `stage`
 

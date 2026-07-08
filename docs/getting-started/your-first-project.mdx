@@ -61,6 +61,16 @@ backend before your first run — every LLM call routes through it.
     Per the CLI help, this is the `'claude-code'` backend: *"dev: reuse the local
     Claude Code CLI auth, no API key."*
   </Tab>
+  <Tab title="cursor backend (dev)">
+    Also for local development, the `cursor` backend reuses your Cursor
+    subscription via the Cursor CLI (`cursor-agent login` or `CURSOR_API_KEY`):
+
+    ```bash
+    docsync run --backend cursor ...
+    ```
+
+    Cursor reports no token usage, so cursor runs show no cost estimate.
+  </Tab>
 </Tabs>
 
 Confirm the CLI is reachable — its top-level help describes its job, "Keep

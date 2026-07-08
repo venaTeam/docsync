@@ -27,8 +27,9 @@ docsync keeps your documentation in sync with code changes. Given a code diff, i
 
   - **`api`** (default) — uses the Anthropic API. Set `ANTHROPIC_API_KEY` in your environment.
   - **`claude-code`** — reuses your local Claude Code CLI authentication, so no API key is required. Handy for local development.
+  - **`cursor`** — reuses your Cursor subscription via the Cursor CLI (`cursor-agent login` or `CURSOR_API_KEY`). Also handy for local development; reports no token usage, so runs show no cost estimate.
 
-  Select the backend per run with `--backend api` or `--backend claude-code`.
+  Select the backend per run with `--backend api`, `--backend claude-code`, or `--backend cursor` — or set it once with the `backend` config field.
 </Note>
 
 Make sure the `docsync` CLI is available on your PATH. It is a Typer-based command line tool with three top-level commands:
@@ -162,6 +163,16 @@ By default, `docsync run` is a **dry run**: it computes impact and writes a repo
           --base main \
           --head HEAD \
           --backend claude-code
+        ```
+      </Tab>
+      <Tab title="Cursor backend">
+        ```bash
+        docsync run \
+          --docs-repo ./docs \
+          --src-repo owner/my-service \
+          --base main \
+          --head HEAD \
+          --backend cursor
         ```
       </Tab>
     </Tabs>

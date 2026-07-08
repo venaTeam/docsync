@@ -278,6 +278,15 @@ class DocsyncConfig(BaseModel):
     models: ModelConfig = Field(
         default_factory=ModelConfig, description="LLM model choices (see ModelConfig)."
     )
+    backend: Literal["api", "claude-code", "cursor"] = Field(
+        default="api",
+        description=(
+            "LLM backend: 'api' (ANTHROPIC_API_KEY), 'claude-code' (dev: local `claude` "
+            "CLI auth), or 'cursor' (dev: the Cursor CLI `cursor-agent`, via "
+            "`cursor-agent login` or CURSOR_API_KEY; reports no token usage, so cost "
+            "metering is unavailable). The --backend CLI flag overrides this."
+        ),
+    )
     docs_root: str = Field(
         default=".", description="Root of the docs tree, relative to the docs repo."
     )

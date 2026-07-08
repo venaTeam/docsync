@@ -116,7 +116,7 @@ Metering is added by wrapping the client **once**, not by editing call sites. `M
 
 ### How a single call's cost is computed
 
-`cost_of` reads four token classes off the response and applies the model's price table. Both response shapes are handled: the SDK's `usage` object (attribute access) and the `claude-code` CLI envelope's `usage` dict.
+`cost_of` reads four token classes off the response and applies the model's price table. Both response shapes are handled: the SDK's `usage` object (attribute access) and the `claude-code` CLI envelope's `usage` dict. The `cursor` backend reports no usage at all, so its calls meter as zero and the cost section is omitted from reports.
 
 ```python
 def cost_of(model, usage):

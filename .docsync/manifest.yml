@@ -178,6 +178,7 @@ pages:
         symbols:
           - get_client
           - ClaudeCodeClient
+          - CursorClient
           - build_edit_prompt
           - build_critique_prompt
     judge_required: true

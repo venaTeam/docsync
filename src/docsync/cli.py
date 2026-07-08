@@ -37,6 +37,26 @@ def _apply_thoroughness(config, value: Optional[str]) -> None:
     config.thoroughness = value
 
 
+_BACKENDS = ("api", "claude-code", "cursor")
+
+# Help text shared by every command's --backend option. "the Cursor CLI
+# (`cursor-agent`)" is spelled out to avoid confusion with docsync's sync cursor.
+_BACKEND_HELP = (
+    "LLM backend: 'api' (ANTHROPIC_API_KEY), 'claude-code' (dev: reuse the local "
+    "Claude Code CLI auth), or 'cursor' (dev: the Cursor CLI `cursor-agent`). "
+    "Overrides config.backend (default 'api')."
+)
+
+
+def _resolve_backend(config, value: Optional[str]) -> str:
+    """Effective LLM backend: --backend flag > config.backend > 'api' (config default)."""
+    if value is None:
+        return config.backend
+    if value not in _BACKENDS:
+        raise typer.BadParameter(f"--backend must be one of {', '.join(_BACKENDS)}")
+    return value
+
+
 def _load_config(docs_repo: Path):
     """Load config, exiting with a friendly framed message on an invalid config.yml."""
     try:
@@ -157,11 +177,7 @@ def run(
         "the diff-size budget. Overrides config.thoroughness.",
     ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
-    backend: str = typer.Option(
-        "api",
-        help="LLM backend: 'api' (ANTHROPIC_API_KEY) or 'claude-code' "
-        "(dev: reuse the local Claude Code CLI auth, no API key).",
-    ),
+    backend: Optional[str] = typer.Option(None, help=_BACKEND_HELP),
 ):
     """Full pipeline: diff -> impact -> edits -> validate -> (PR | patch + report)."""
     from .llm_backends import get_client
@@ -205,7 +221,7 @@ def run(
             )
             raise typer.Exit(2)
 
-    client = get_client(backend)
+    client = get_client(_resolve_backend(config, backend))
 
     diff = _resolve_diff(src_repo, base, head, pr_number, pr_title, from_event)
 
@@ -366,7 +382,7 @@ def bootstrap(
         "the planner targets and how deep each page goes. Overrides config.thoroughness.",
     ),
     report_path: Optional[Path] = typer.Option(None, help="Write the PR-body markdown here."),
-    backend: str = typer.Option("api", help="LLM backend: 'api' or 'claude-code'."),
+    backend: Optional[str] = typer.Option(None, help=_BACKEND_HELP),
 ):
     """Generate a docs SITE from scratch: ingest repos -> plan an IA -> author -> validate.
 
@@ -386,7 +402,7 @@ def bootstrap(
         config.readability_pass = polish
     _apply_thoroughness(config, thoroughness)
 
-    client = get_client(backend)
+    client = get_client(_resolve_backend(config, backend))
     result = bootstrap_mod.run_bootstrap(
         repos, docs_repo, config,
         max_pages=max_pages, check_links=check_links, plan_only=plan_only, client=client,
@@ -461,7 +477,7 @@ def infer(
     max_parallel: Optional[int] = typer.Option(
         None, help="Max concurrent judge requests. Overrides config.max_parallel_requests."
     ),
-    backend: str = typer.Option("api", help="LLM backend for the judge: 'api' or 'claude-code'."),
+    backend: Optional[str] = typer.Option(None, help=f"For the judge — {_BACKEND_HELP}"),
     report_path: Optional[Path] = typer.Option(None, help="Write the console summary here."),
 ):
     """Infer manifest anchors for an EXISTING docs site (the brownfield onboarding path).
@@ -479,7 +495,7 @@ def infer(
     if max_parallel is not None:
         config.max_parallel_requests = max_parallel
 
-    client = get_client(backend)
+    client = get_client(_resolve_backend(config, backend))
     try:
         result = infer_mod.run_infer(repos, docs_repo, config, max_pages=max_pages, client=client)
     except ImportError:
@@ -654,7 +670,7 @@ def init(
     src_repo: Optional[List[str]] = typer.Option(
         None, help="Source repo(s) for --infer, as 'name=path' or a bare path. Repeatable."
     ),
-    backend: str = typer.Option("api", help="LLM backend for --infer: 'api' or 'claude-code'."),
+    backend: Optional[str] = typer.Option(None, help=f"For --infer — {_BACKEND_HELP}"),
 ):
     """Scaffold `.docsync/` in a docs repo (first step to adopting docsync).
 
@@ -705,7 +721,7 @@ def init(
 
     repos = [_parse_repo_spec(item) for item in src_repo]
     config = _load_config(docs_repo)
-    client = get_client(backend)
+    client = get_client(_resolve_backend(config, backend))
     try:
         result = infer_mod.run_infer(repos, docs_repo, config, client=client)
     except ImportError:
@@ -770,7 +786,7 @@ def eval(  # noqa: A001 - intentional command name
     golden: Path = typer.Option(..., help="Golden-set JSON of labeled PRs (repo/base/head/expected_pages)."),
     mode: str = typer.Option("map", help="'map' (free anchor mapping) or 'full' (LLM edit pipeline)."),
     use_embeddings: bool = typer.Option(False, help="Also use the embeddings recall-net when mapping."),
-    backend: str = typer.Option("api", help="LLM backend for --mode full: 'api' or 'claude-code'."),
+    backend: Optional[str] = typer.Option(None, help=f"For --mode full — {_BACKEND_HELP}"),
     json_out: Optional[Path] = typer.Option(None, help="Write the full EvalReport JSON here."),
     min_recall: Optional[float] = typer.Option(
         None, help="Fail (exit 1) if recall falls below this floor — the regression gate for CI."
@@ -799,7 +815,7 @@ def eval(  # noqa: A001 - intentional command name
     if mode == "full":
         from .llm_backends import get_client
 
-        client = get_client(backend)
+        client = get_client(_resolve_backend(config, backend))
 
     report = run_eval(
         cases, docs_repo, config, manifest,

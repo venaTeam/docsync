@@ -66,6 +66,13 @@ You need a docs repo checkout and a way for the LLM calls to authenticate. Pick 
     docsync run --docs-repo ./docs --backend claude-code ...
     ```
   </Tab>
+  <Tab title="Local Cursor">
+    Also for local development, `--backend cursor` reuses your Cursor subscription via the Cursor CLI (`cursor-agent login` or `CURSOR_API_KEY`):
+
+    ```bash
+    docsync run --docs-repo ./docs --backend cursor ...
+    ```
+  </Tab>
 </Tabs>
 
 ## Generate a site from scratch

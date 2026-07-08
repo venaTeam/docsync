@@ -247,7 +247,7 @@ class MeteredClient:
 Costs are an **estimate**. `PRICING` is a built-in table of USD per *million* tokens, unknown models fall back to opus-class pricing so cost is never under-reported, and `RunUsage.estimated` is always `True`. Update `PRICING` when Anthropic's rates change.
 </Warning>
 
-The `--backend` flag chooses where the client comes from: `api` (an `ANTHROPIC_API_KEY` client) or `claude-code` (reusing local Claude Code CLI auth, no API key). Both response shapes — the SDK's `usage` object and the `claude-code` CLI envelope's `usage` dict — are handled by the same metering code.
+The `--backend` flag (or the `backend` config field) chooses where the client comes from: `api` (an `ANTHROPIC_API_KEY` client), `claude-code` (reusing local Claude Code CLI auth, no API key), or `cursor` (the Cursor CLI `cursor-agent`, reusing your Cursor subscription). Both response shapes — the SDK's `usage` object and the `claude-code` CLI envelope's `usage` dict — are handled by the same metering code; the `cursor` backend reports no usage, so its runs show no cost estimate.
 
 ## Putting it together
 
