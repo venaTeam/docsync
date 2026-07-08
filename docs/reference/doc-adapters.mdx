@@ -235,7 +235,7 @@ Matched open/close keys let an edit **add** a balanced `:::note` the same way th
 
 ### Navigation (`sidebars.js`)
 
-Docusaurus reads its sidebar from `sidebars.js`/`sidebars.ts` at the **project root** (the directory holding `docusaurus.config.{js,ts}`), which the adapter locates by walking up from `docs_root`. `set_nav_sections` writes a manual sidebar (`module.exports = { docsSidebar: [ {type:"category", label, items:[…]}, … ] }`) with categories in reading-flow order, set-unioned and idempotent; `nav_routes` reads the doc ids back. The adapter assumes an already-initialized Docusaurus project — `ensure_valid_docs_json` seeds an empty `sidebars.js` but does **not** fabricate `docusaurus.config.js`.
+Docusaurus reads its sidebar from `sidebars.js`/`sidebars.ts` at the **project root** (the directory holding `docusaurus.config.{js,ts}`), which the adapter locates by walking up from `docs_root`. `set_nav_sections` writes a manual sidebar (`module.exports = { docsSidebar: [ {type:"category", label, items:[…]}, … ] }`) with categories in reading-flow order, set-unioned and idempotent; `nav_routes` (and page registration) read and dedupe doc ids across **every** sidebar in the file, not just the first. Doc ids strip number prefixes per path segment (`01-intro.md` → `intro`), matching Docusaurus's default `numberPrefixParser`, so sidebar entries build correctly. The adapter assumes an already-initialized Docusaurus project — `ensure_valid_docs_json` seeds an empty `sidebars.js` but does **not** fabricate `docusaurus.config.js`.
 
 ## Implementing a new adapter
 

@@ -58,7 +58,7 @@ Runs all gates comparing `original_text` → `new_text` and returns a `Validatio
 | `original_text` | `str` | The page contents before the edit. |
 | `new_text` | `str` | The candidate rewrite. |
 | `manifest_page` | `ManifestPage \| None` | Manifest entry; controls `allow_frontmatter_edit` and the diff-size budget. |
-| `adapter` | `DocAdapter` | The framework adapter (e.g. Mintlify or plain Markdown) that knows how to split frontmatter and compute structural signatures. |
+| `adapter` | `DocAdapter` | The framework adapter (e.g. Mintlify, Docusaurus, or plain Markdown) that knows how to split frontmatter and compute structural signatures. |
 | `check_links` | `bool` (kw-only) | Enables the soft broken-link gate. |
 | `docs_root` | `Path \| None` (kw-only) | Root used to resolve links; required for the link gate to run. |
 
@@ -69,7 +69,7 @@ The hard gates run in order:
     `_check_frontmatter` — frozen keys must be unchanged unless the manifest opts in; frontmatter must still parse.
   </Step>
   <Step title="Component / mermaid / fence integrity">
-    `_check_structure` — structural signatures must be identical; fence count must be even.
+    `_check_structure` — structural signatures must match; the adapter's `additive_safe_components()` leaf components may be added in balanced open/close pairs, but container components, mermaid, and the fence count stay frozen (and the fence count must remain even).
   </Step>
   <Step title="Well-formedness">
     `_check_wellformed` — components must be balanced and correctly nested.
@@ -120,7 +120,7 @@ Parses the frontmatter and, for each key in `frontmatter_keys_to_freeze()`, requ
 
 ### `_check_structure` — structural signature (edit)
 
-Compares the `structural_signature()` of the original and new text key-by-key (over the union of both signatures' keys). The signature captures component/mermaid counts and the `fence_count`; any divergence is a failure, ensuring an edit cannot add, drop, or reshape structural elements.
+Compares the `structural_signature()` of the original and new text key-by-key (over the union of both signatures' keys). The signature captures component/mermaid counts and the `fence_count`. Most divergences are failures, ensuring an edit cannot drop or reshape structural elements — but the adapter's `additive_safe_components()` names leaf components (e.g. `Note`, `Tip`, `Card`) whose count may *increase* as long as each is added as a balanced open/close pair; container components (`CardGroup`, `Tabs`, `Steps`, …), mermaid diagrams, and code fences stay frozen.
 
 ### `_check_even_fences` — balanced code fences (new page)
 
@@ -158,7 +158,7 @@ Empty content fails with `new content is empty`. Content shorter than `_NEW_PAGE
 def get_adapter(page_path: str) -> DocAdapter:
 ```
 
-Returns the adapter that owns `page_path`. The MVP registry holds a single `MintlifyAdapter`; if it does not own the page, a `ValueError` is raised. Callers treat that error as "no adapter — drop the page" rather than silently skipping it.
+Returns the adapter that owns `page_path`. The registry holds a `MintlifyAdapter` and a `DocusaurusAdapter`; if neither owns the page, a `ValueError` is raised. Callers treat that error as "no adapter — drop the page" rather than silently skipping it.
 
 ## `ValidationResult`
 

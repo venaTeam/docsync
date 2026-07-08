@@ -93,7 +93,7 @@ Each surviving page runs through `_process_page`, which is deliberately **pure w
 
 <Steps>
   <Step title="Stage 4 — generate the edit">
-    `edits.generate_page_edit` is handed the page path, its current content, the diff, the impact record, the manifest entry, and config. It returns a structured edit. The configured `thoroughness` (`light` | `medium` | `high`) is woven into the edit prompt and sets the per-page token budget, tuning how deep the edits go. If the model returns no edits, the outcome records `no_change_reason` and the page is done.
+    `edits.generate_page_edit` is handed the page path, its current content, the diff, the impact record, the manifest entry, and config. It returns a structured edit. The configured `thoroughness` (`light` | `medium` | `high`) is woven into the edit prompt and sets the per-page token budget, tuning how deep the edits go. The active adapter's `authoring_components_hint` — framework-specific component guidance (Mintlify components, Docusaurus admonitions) — is also threaded into the edit prompt (and the author/polish prompts) so edits only use components the target site can render. If the model returns no edits, the outcome records `no_change_reason` and the page is done.
   </Step>
   <Step title="Stage 4b — adversarial self-critique (opt-in)">
     When `self_critique` is on, `critique.critique_page_edit` reviews the proposed edit and `apply_critique` may drop weak edits. This is best-effort: if the critique call fails, the original edit is kept rather than blocking the page.
@@ -102,7 +102,7 @@ Each surviving page runs through `_process_page`, which is deliberately **pure w
     `edits.apply_edits` performs a strict string-replace against the original. If an edit no longer matches the source text, it raises `EditApplicationError` and the page is dropped with a note — docsync never applies a fuzzy or partial edit.
   </Step>
   <Step title="Stage 5 — validate">
-    `validate_page` compares original vs. new content against the manifest and the format adapter (with optional link checking). Only a page whose validation `passed` gets `new_content` set, `applied = True`, and the note `"ready"`.
+    `validate_page` compares original vs. new content against the manifest and the format adapter (with optional link checking). The adapter's structural gate treats its `additive_safe_components` as leaf elements an edit may add in balanced open/close pairs (a callout, a tab) while keeping container structure frozen. Only a page whose validation `passed` gets `new_content` set, `applied = True`, and the note `"ready"`.
   </Step>
 </Steps>
 
