@@ -28,15 +28,24 @@ Caveats (why these are dev-only, not the product path):
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+# Interleaved reasoning some gateway-served models (MiniMax, DeepSeek-R1 style) emit
+# in the *text* reply. Anthropic models return thinking out-of-band, so these tags
+# never appear there — but through an Anthropic-compatible gateway they land inline
+# and would corrupt JSON extraction / the whole-document reply.
+_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"\A\s*<think(?:ing)?>", re.IGNORECASE)
 # An entire reply wrapped in one ``` fence (any language tag), e.g. the model
 # returning ```mdx\n<page>\n```. Anchored start+end so an *internal* fence in the
 # document body (a code sample) is never mistaken for the wrapper.
@@ -99,16 +108,51 @@ def _user_text(messages: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _strip_reasoning(text: str) -> str:
+    """Drop inline <think>/<thinking> reasoning blocks from a reply.
+
+    A reply that is *only* an unterminated reasoning block (the model hit its token
+    cap mid-think) strips to "" — the callers' empty/parse checks then trigger their
+    retry rather than validating reasoning prose as the answer.
+    """
+    stripped = _THINK_BLOCK_RE.sub("", text)
+    if _THINK_OPEN_RE.match(stripped):
+        return ""
+    return stripped.strip()
+
+
 def _extract_json(text: str) -> str:
-    """Pull the JSON object out of the model's reply (handles ```json fences)."""
+    """Pull the first complete JSON object out of the model's reply.
+
+    Handles ```json fences, then scans from the first ``{`` with brace/string
+    awareness, so trailing prose — which may itself contain braces — can't be
+    swept into the candidate the way a last-``}`` slice would.
+    """
     m = _FENCE_RE.search(text)
     if m:
         text = m.group(1)
     start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
+    if start == -1:
         raise ValueError(f"no JSON object found in CLI reply: {text[:200]!r}")
-    return text[start : end + 1]
+    depth, in_str, escaped = 0, False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise ValueError(f"unterminated JSON object in CLI reply: {text[:200]!r}")
 
 
 def _single_text_field(model: type[BaseModel]) -> str | None:
@@ -130,6 +174,39 @@ def _unwrap_outer_fence(text: str) -> str:
     """Strip a single ``` fence wrapping the *entire* reply, then trim surrounding space."""
     m = _OUTER_FENCE_RE.match(text)
     return (m.group(1) if m else text).strip()
+
+
+# Raw-reply observability for opaque gateways: when DOCSYNC_LLM_DEBUG names a
+# directory, every CLI call's command, prompt, and raw stdout/stderr is written
+# there — the only way to see what a gateway-served model actually returned when
+# a stage silently drops everything. Best-effort: a dump failure never fails a call.
+_DEBUG_DIR_ENV = "DOCSYNC_LLM_DEBUG"
+_dump_lock = threading.Lock()
+_dump_seq = 0
+
+
+def _dump_call(label: str, cmd: list[str], prompt: str, proc: Any) -> None:
+    dump_dir = os.environ.get(_DEBUG_DIR_ENV)
+    if not dump_dir:
+        return
+    global _dump_seq
+    with _dump_lock:
+        _dump_seq += 1
+        seq = _dump_seq
+    try:
+        out = Path(dump_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        body = (
+            f"# {label} call {seq}\n\n"
+            f"command: {json.dumps(cmd)}\n"
+            f"returncode: {proc.returncode}\n\n"
+            f"## prompt (stdin)\n{prompt}\n\n"
+            f"## stdout\n{proc.stdout}\n\n"
+            f"## stderr\n{proc.stderr}\n"
+        )
+        (out / f"call-{seq:03d}.txt").write_text(body, encoding="utf-8")
+    except OSError:
+        pass
 
 
 class _Resp:
@@ -169,6 +246,7 @@ class _Messages:
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"{self._label} timed out after {_CLI_TIMEOUT_S}s")
+        _dump_call(self._label, cmd, prompt, proc)
         if proc.returncode != 0:
             raise RuntimeError(f"{self._label} failed ({proc.returncode}): {proc.stderr.strip()}")
         try:
@@ -203,7 +281,7 @@ class _Messages:
         for _ in range(2):  # one retry on a parse/validation miss
             raw, usage = self._run(mdl, sys_text, user_text)
             try:
-                obj = output_format.model_validate_json(_extract_json(raw))
+                obj = output_format.model_validate_json(_extract_json(_strip_reasoning(raw)))
                 return _Resp(obj, usage=usage)
             except (ValueError, ValidationError) as exc:
                 last_err = exc
@@ -229,7 +307,7 @@ class _Messages:
         last_err: Exception | None = None
         for _ in range(2):
             raw, usage = self._run(mdl, sys_text, user_text)
-            content = _unwrap_outer_fence(raw)
+            content = _unwrap_outer_fence(_strip_reasoning(raw))
             try:
                 if not content.strip():
                     raise ValueError("empty document reply")

@@ -17,6 +17,25 @@ def test_extract_json_handles_fences_and_prose():
         be._extract_json("no json here")
 
 
+def test_extract_json_stops_at_the_balanced_close():
+    # Trailing prose containing a stray `}` must not be swept into the candidate.
+    assert json.loads(be._extract_json('{"a": {"b": 1}} and a stray } here')) == {"a": {"b": 1}}
+    # Braces inside JSON strings don't affect the balance.
+    assert json.loads(be._extract_json('{"a": "curly } brace"} trailing')) == {"a": "curly } brace"}
+    with pytest.raises(ValueError):
+        be._extract_json('{"a": 1')  # unterminated
+
+
+def test_strip_reasoning_removes_think_blocks():
+    # Closed blocks (any case, <think> or <thinking>) are removed wherever they sit.
+    assert be._strip_reasoning('<think>plan {with} braces</think>\n{"a": 1}') == '{"a": 1}'
+    assert be._strip_reasoning('<THINKING>hm</THINKING>doc') == "doc"
+    # A reply that is only an unterminated reasoning block strips to "" (-> retry).
+    assert be._strip_reasoning("<think>never closed {") == ""
+    # Replies without reasoning tags pass through (trimmed).
+    assert be._strip_reasoning('  {"a": 1} ') == '{"a": 1}'
+
+
 def test_system_and_user_flattening():
     sys = [{"type": "text", "text": "be terse"}, {"type": "text", "text": "rule two"}]
     assert be._system_text(sys) == "be terse\n\nrule two"
@@ -149,6 +168,66 @@ def test_parse_text_field_retries_then_raises_on_empty(monkeypatch):
             output_format=AuthoredPage, system="s", messages=[{"role": "user", "content": "q"}]
         )
     assert attempts["n"] == 2
+
+
+def test_parse_json_survives_inline_reasoning(monkeypatch):
+    # Gateway-served models (MiniMax style) emit <think> blocks inline in the text
+    # reply; the braces inside must not corrupt JSON extraction.
+    reply = (
+        '<think>The page {p.mdx} looks affected because {reasons}...</think>\n'
+        '{"page_path":"p.mdx","affected":true,"confidence":0.9,"reason":"r"}'
+    )
+
+    def fake_run(cmd, input, **kwargs):
+        return type("P", (), {"returncode": 0, "stdout": _fake_envelope(reply), "stderr": ""})()
+
+    monkeypatch.setattr(be.subprocess, "run", fake_run)
+    monkeypatch.setattr(be.shutil, "which", lambda _: "/usr/bin/claude")
+    client = be.ClaudeCodeClient()
+    resp = client.messages.parse(
+        output_format=JudgeVerdict, system="s", messages=[{"role": "user", "content": "q"}]
+    )
+    assert resp.parsed_output.affected is True
+
+
+def test_parse_text_field_strips_reasoning_prefix(monkeypatch):
+    # A <think> preamble before the document must not land in the page (it would
+    # fail the frontmatter gate downstream); the fenced document behind it survives.
+    page = "---\ntitle: X\ndescription: y\n---\n\nBody text here.\n"
+
+    def fake_run(cmd, input, **kwargs):
+        out = _fake_envelope(f"<think>outline the page...</think>\n```mdx\n{page}\n```")
+        return type("P", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+
+    monkeypatch.setattr(be.subprocess, "run", fake_run)
+    monkeypatch.setattr(be.shutil, "which", lambda _: "/usr/bin/claude")
+    client = be.ClaudeCodeClient()
+    resp = client.messages.parse(
+        output_format=AuthoredPage, system="s", messages=[{"role": "user", "content": "q"}]
+    )
+    assert resp.parsed_output.content == page.strip()
+
+
+def test_debug_dump_writes_call_transcripts(monkeypatch, tmp_path):
+    dump_dir = tmp_path / "llm-debug"
+    monkeypatch.setenv("DOCSYNC_LLM_DEBUG", str(dump_dir))
+
+    def fake_run(cmd, input, **kwargs):
+        out = _fake_envelope('{"page_path":"p.mdx","affected":true,"confidence":0.8,"reason":"r"}')
+        return type("P", (), {"returncode": 0, "stdout": out, "stderr": "warn: x"})()
+
+    monkeypatch.setattr(be.subprocess, "run", fake_run)
+    monkeypatch.setattr(be.shutil, "which", lambda _: "/usr/bin/claude")
+    client = be.ClaudeCodeClient()
+    client.messages.parse(
+        output_format=JudgeVerdict, system="s", messages=[{"role": "user", "content": "the ask"}]
+    )
+    dumps = sorted(dump_dir.glob("call-*.txt"))
+    assert len(dumps) == 1
+    body = dumps[0].read_text()
+    # The transcript carries everything needed to diagnose an opaque gateway reply:
+    # the stdin prompt, the raw stdout envelope, and stderr.
+    assert "the ask" in body and "p.mdx" in body and "warn: x" in body
 
 
 def test_get_client_unknown_backend():
