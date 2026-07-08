@@ -229,6 +229,17 @@ def plan_docs(
         output_format=DocPlan,
         cache_system=False,
     )
+    # An empty plan is never a valid outcome for bootstrap (`pages` defaults to [],
+    # so a model that under-fills the schema "succeeds" silently). Fail loudly with
+    # the knobs an operator behind a gateway needs, instead of reporting 0 planned.
+    if not raw_plan.pages:
+        raise RuntimeError(
+            f"bootstrap planner returned an empty DocPlan (0 pages) from model "
+            f"{config.models.judge_model!r}. The model likely failed to fill the plan "
+            "schema. Check that .docsync/config.yml models match what your endpoint "
+            "serves; on the claude-code/cursor backends set DOCSYNC_LLM_DEBUG=<dir> "
+            "to capture the raw replies."
+        )
 
     taken_routes = set(existing_routes)
     kept: list[PlannedPage] = []

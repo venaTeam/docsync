@@ -7,36 +7,74 @@ of the Anthropic client surface:
                                  output_format=SomePydanticModel, **ignored)
     resp.parsed_output          # a validated SomePydanticModel instance
 
-The production backend is `anthropic.Anthropic()`. This module adds a **dev-only**
-backend, `ClaudeCodeClient`, that satisfies the same interface by shelling out to
-the local `claude` CLI in headless mode (`claude -p --output-format json`). It
-reuses your existing Claude Code authentication, so you can run the full pipeline
-for development WITHOUT an ANTHROPIC_API_KEY.
+The production backend is `anthropic.Anthropic()`. This module adds two **dev-only**
+backends that satisfy the same interface by shelling out to a local CLI in headless
+mode: `ClaudeCodeClient` over the `claude` CLI (`claude -p --output-format json`,
+reusing your Claude Code authentication) and `CursorClient` over the Cursor CLI
+(`cursor-agent -p --output-format json`, reusing your Cursor subscription /
+CURSOR_API_KEY). Either lets you run the full pipeline WITHOUT an ANTHROPIC_API_KEY.
 
-Caveats (why this is dev-only, not the product path):
+Caveats (why these are dev-only, not the product path):
   * No schema-enforced structured outputs — we prompt for JSON and validate with
     pydantic ourselves, retrying once on a parse/validation miss.
-  * Per-call overhead: the CLI injects Claude Code's own system prompt/tooling, so
-    each call costs more tokens/latency than a raw API call.
-  * It bills your Claude Code subscription/credits; automated/batch use of
-    subscription auth has Terms-of-Service limits. Use for local dogfooding only.
+  * Per-call overhead: the CLIs inject their own system prompt/tooling, so each
+    call costs more tokens/latency than a raw API call.
+  * They bill your subscription/credits; automated/batch use of subscription auth
+    has Terms-of-Service limits. Use for local dogfooding only.
+  * `cursor-agent` reports no token usage in its JSON envelope, so cursor runs
+    show no cost estimate.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+# Interleaved reasoning some gateway-served models (MiniMax, DeepSeek-R1 style) emit
+# in the *text* reply. Anthropic models return thinking out-of-band, so these tags
+# never appear there — but through an Anthropic-compatible gateway they land inline
+# and would corrupt JSON extraction / the whole-document reply.
+_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"\A\s*<think(?:ing)?>", re.IGNORECASE)
 # An entire reply wrapped in one ``` fence (any language tag), e.g. the model
 # returning ```mdx\n<page>\n```. Anchored start+end so an *internal* fence in the
 # document body (a code sample) is never mistaken for the wrapper.
 _OUTER_FENCE_RE = re.compile(r"\A\s*```[A-Za-z0-9]*\n(.*?)\n?```\s*\Z", re.DOTALL)
+
+# Ceiling on a single CLI call. Generous — Opus authoring calls run for minutes —
+# but bounded, so a hung CLI (e.g. blocking on an interactive login prompt) fails
+# the call instead of stalling a pipeline worker forever.
+_CLI_TIMEOUT_S = 600
+
+# Anthropic model ids -> Cursor-native names (longest-prefix match). Unknown ids
+# pass through verbatim so ModelConfig can hold Cursor-native names ("gpt-5",
+# "auto") directly. Cheap-tier name unverified against `cursor-agent models`; an
+# unrecognized name fails the run with the CLI's own error rather than silently
+# rerouting.
+_CURSOR_MODEL_MAP = {
+    "claude-opus-4": "opus",
+    "claude-sonnet-4": "sonnet-4.5",
+    "claude-haiku-4": "haiku-4.5",
+}
+
+
+def _cursor_model(model: str) -> str:
+    """Translate an Anthropic model id to its Cursor-native name."""
+    best = ""
+    for prefix in _CURSOR_MODEL_MAP:
+        if model.startswith(prefix) and len(prefix) > len(best):
+            best = prefix
+    return _CURSOR_MODEL_MAP[best] if best else model
 
 
 def _system_text(system: Any) -> str:
@@ -70,16 +108,51 @@ def _user_text(messages: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _strip_reasoning(text: str) -> str:
+    """Drop inline <think>/<thinking> reasoning blocks from a reply.
+
+    A reply that is *only* an unterminated reasoning block (the model hit its token
+    cap mid-think) strips to "" — the callers' empty/parse checks then trigger their
+    retry rather than validating reasoning prose as the answer.
+    """
+    stripped = _THINK_BLOCK_RE.sub("", text)
+    if _THINK_OPEN_RE.match(stripped):
+        return ""
+    return stripped.strip()
+
+
 def _extract_json(text: str) -> str:
-    """Pull the JSON object out of the model's reply (handles ```json fences)."""
+    """Pull the first complete JSON object out of the model's reply.
+
+    Handles ```json fences, then scans from the first ``{`` with brace/string
+    awareness, so trailing prose — which may itself contain braces — can't be
+    swept into the candidate the way a last-``}`` slice would.
+    """
     m = _FENCE_RE.search(text)
     if m:
         text = m.group(1)
     start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
+    if start == -1:
         raise ValueError(f"no JSON object found in CLI reply: {text[:200]!r}")
-    return text[start : end + 1]
+    depth, in_str, escaped = 0, False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise ValueError(f"unterminated JSON object in CLI reply: {text[:200]!r}")
 
 
 def _single_text_field(model: type[BaseModel]) -> str | None:
@@ -103,6 +176,39 @@ def _unwrap_outer_fence(text: str) -> str:
     return (m.group(1) if m else text).strip()
 
 
+# Raw-reply observability for opaque gateways: when DOCSYNC_LLM_DEBUG names a
+# directory, every CLI call's command, prompt, and raw stdout/stderr is written
+# there — the only way to see what a gateway-served model actually returned when
+# a stage silently drops everything. Best-effort: a dump failure never fails a call.
+_DEBUG_DIR_ENV = "DOCSYNC_LLM_DEBUG"
+_dump_lock = threading.Lock()
+_dump_seq = 0
+
+
+def _dump_call(label: str, cmd: list[str], prompt: str, proc: Any) -> None:
+    dump_dir = os.environ.get(_DEBUG_DIR_ENV)
+    if not dump_dir:
+        return
+    global _dump_seq
+    with _dump_lock:
+        _dump_seq += 1
+        seq = _dump_seq
+    try:
+        out = Path(dump_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        body = (
+            f"# {label} call {seq}\n\n"
+            f"command: {json.dumps(cmd)}\n"
+            f"returncode: {proc.returncode}\n\n"
+            f"## prompt (stdin)\n{prompt}\n\n"
+            f"## stdout\n{proc.stdout}\n\n"
+            f"## stderr\n{proc.stderr}\n"
+        )
+        (out / f"call-{seq:03d}.txt").write_text(body, encoding="utf-8")
+    except OSError:
+        pass
+
+
 class _Resp:
     def __init__(self, parsed_output: BaseModel, usage: Any = None):
         self.parsed_output = parsed_output
@@ -111,6 +217,8 @@ class _Resp:
 
 
 class _Messages:
+    _label = "claude CLI"  # backend name for error messages
+
     def __init__(self, default_model: str | None, cli: str, extra_args: list[str]):
         self._default_model = default_model
         self._cli = cli
@@ -127,12 +235,26 @@ class _Messages:
             "--system-prompt", system,
             *self._extra_args,
         ]
-        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True)
+        return self._invoke(cmd, prompt)
+
+    def _invoke(self, cmd: list[str], prompt: str, cwd: str | None = None) -> tuple[str, Any]:
+        """Run the CLI and unpack its JSON envelope -> (result text, usage or None)."""
+        try:
+            proc = subprocess.run(
+                cmd, input=prompt, capture_output=True, text=True,
+                cwd=cwd, timeout=_CLI_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{self._label} timed out after {_CLI_TIMEOUT_S}s")
+        _dump_call(self._label, cmd, prompt, proc)
         if proc.returncode != 0:
-            raise RuntimeError(f"claude CLI failed ({proc.returncode}): {proc.stderr.strip()}")
-        envelope = json.loads(proc.stdout)
+            raise RuntimeError(f"{self._label} failed ({proc.returncode}): {proc.stderr.strip()}")
+        try:
+            envelope = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"{self._label} returned non-JSON output: {proc.stdout[:200]!r}")
         if envelope.get("is_error"):
-            raise RuntimeError(f"claude CLI error: {envelope.get('result')}")
+            raise RuntimeError(f"{self._label} error: {envelope.get('result')}")
         return envelope.get("result", ""), envelope.get("usage")
 
     def parse(self, *, output_format: type[BaseModel], model: str | None = None,
@@ -159,13 +281,13 @@ class _Messages:
         for _ in range(2):  # one retry on a parse/validation miss
             raw, usage = self._run(mdl, sys_text, user_text)
             try:
-                obj = output_format.model_validate_json(_extract_json(raw))
+                obj = output_format.model_validate_json(_extract_json(_strip_reasoning(raw)))
                 return _Resp(obj, usage=usage)
             except (ValueError, ValidationError) as exc:
                 last_err = exc
                 user_text += "\n\nYour previous reply was not valid JSON for the schema. " \
                              "Return ONLY the JSON object."
-        raise RuntimeError(f"claude CLI did not return schema-valid JSON: {last_err}")
+        raise RuntimeError(f"{self._label} did not return schema-valid JSON: {last_err}")
 
     def _parse_text(self, output_format, field, mdl, system, messages) -> _Resp:
         """Whole-document output: take the raw reply as the single string field.
@@ -185,7 +307,7 @@ class _Messages:
         last_err: Exception | None = None
         for _ in range(2):
             raw, usage = self._run(mdl, sys_text, user_text)
-            content = _unwrap_outer_fence(raw)
+            content = _unwrap_outer_fence(_strip_reasoning(raw))
             try:
                 if not content.strip():
                     raise ValueError("empty document reply")
@@ -194,7 +316,34 @@ class _Messages:
                 last_err = exc
                 user_text += "\n\nYour previous reply was empty or malformed. Return the " \
                              "full document text now."
-        raise RuntimeError(f"claude CLI did not return a usable document: {last_err}")
+        raise RuntimeError(f"{self._label} did not return a usable document: {last_err}")
+
+
+class _CursorMessages(_Messages):
+    """`cursor-agent` variant: no --system-prompt flag (the system text is prepended
+    to the stdin prompt in a delimited block) and no usage in the JSON envelope."""
+
+    _label = "cursor-agent"
+
+    def __init__(self, default_model: str | None, cli: str, extra_args: list[str],
+                 workdir: str):
+        super().__init__(default_model, cli, extra_args)
+        self._workdir = workdir
+
+    def _run(self, model: str, system: str, prompt: str) -> tuple[str, Any]:
+        # Never pass --force (it auto-approves the agent's commands); run in the
+        # client's empty temp cwd so there is no workspace to read or edit. Prompt
+        # via STDIN, as with the claude backend (print mode is inferred from the
+        # pipe; fall back to a positional prompt arg if a CLI version rejects it).
+        cmd = [
+            self._cli, "-p",
+            "--output-format", "json",
+            "--model", _cursor_model(model),
+            *self._extra_args,
+        ]
+        full_prompt = f"<system-instructions>\n{system}\n</system-instructions>\n\n{prompt}"
+        text, _ = self._invoke(cmd, full_prompt, cwd=self._workdir)
+        return text, None  # Cursor's envelope carries no usage
 
 
 class ClaudeCodeClient:
@@ -213,12 +362,40 @@ class ClaudeCodeClient:
         self.messages = _Messages(default_model, resolved, extra_args or [])
 
 
+class CursorClient:
+    """Dev backend: drop-in for `anthropic.Anthropic()` over the Cursor CLI.
+
+    Auth comes from `cursor-agent login` or CURSOR_API_KEY. cursor-agent is a coding
+    *agent* with tools; this client keeps it a pure text generator: the parse system
+    suffixes forbid tools, every call runs in a fresh empty temp cwd (no workspace to
+    read or edit), and --force is never passed. The CLI reports no token usage, so
+    metered runs show no cost estimate.
+    """
+
+    def __init__(self, default_model: str | None = None, cli: str | None = None,
+                 extra_args: list[str] | None = None):
+        resolved = cli or shutil.which("cursor-agent")
+        if not resolved:
+            raise RuntimeError(
+                "`cursor-agent` CLI not found on PATH — install the Cursor CLI and "
+                "authenticate (`cursor-agent login` or CURSOR_API_KEY)."
+            )
+        # Kept for the client's lifetime; cleaned up when the client is collected.
+        self._workdir = tempfile.TemporaryDirectory(prefix="docsync-cursor-")
+        self.messages = _CursorMessages(
+            default_model, resolved, extra_args or [], workdir=self._workdir.name
+        )
+
+
 def get_client(backend: str):
-    """Factory: 'api' -> anthropic.Anthropic(); 'claude-code' -> ClaudeCodeClient()."""
+    """Factory: 'api' -> anthropic.Anthropic(); 'claude-code' -> ClaudeCodeClient();
+    'cursor' -> CursorClient()."""
     if backend == "claude-code":
         return ClaudeCodeClient()
+    if backend == "cursor":
+        return CursorClient()
     if backend == "api":
         import anthropic
 
         return anthropic.Anthropic()
-    raise ValueError(f"unknown backend: {backend!r} (use 'api' or 'claude-code')")
+    raise ValueError(f"unknown backend: {backend!r} (use 'api', 'claude-code', or 'cursor')")

@@ -75,7 +75,7 @@ docsync run --docs-repo ./docs --src-repo owner/name --base <sha> --head <sha>
 | `--max-parallel` | `int` | `None` | Max concurrent LLM requests for the judge + edit stages. Overrides `config.max_parallel_requests`. |
 | `--preflight` / `--no-preflight` | `bool` | `True` | Pre-flight the manifest (doctor) and abort before any LLM spend if it references doc pages that don't exist. `--no-preflight` to bypass. |
 | `--report-path` | `Path` | `None` | Write the PR-body markdown here. |
-| `--backend` | `str` | `"api"` | LLM backend: `api` (uses `ANTHROPIC_API_KEY`) or `claude-code` (dev: reuse the local Claude Code CLI auth, no API key). |
+| `--backend` | `str` | `config.backend` (`"api"`) | LLM backend: `api` (uses `ANTHROPIC_API_KEY`), `claude-code` (dev: reuse the local Claude Code CLI auth, no API key), or `cursor` (dev: the Cursor CLI `cursor-agent`). Overrides the `backend` config field. |
 
 ### How the diff source is resolved
 
@@ -103,7 +103,7 @@ If none of those conditions are met, the command raises a `BadParameter` error:
 
 1. **Load config + manifest** from the docs repo. `--max-parallel`, if set, overrides `config.max_parallel_requests`.
 2. **Preflight gate** (when `--preflight`): runs `doctor`. If the manifest references missing pages, the command prints each offending page and exits **before any LLM spend**.
-3. **Resolve the LLM client** for the chosen `--backend`.
+3. **Resolve the LLM client** for the effective backend (`--backend` flag, else the `backend` config field).
 4. **Resolve the diff** (see above).
 5. **Idempotency check**: if `diff.repo@diff.head_sha` was already processed, the run is skipped.
 6. **Run the pipeline** (impact → edits → validate), snapshotting original page text for the diff preview.
@@ -240,7 +240,8 @@ Pass `--min-recall` and/or `--min-precision` to turn the score into a CI regress
 | `GITHUB_EVENT_PATH` | `run` | CI-provided path to the GitHub event JSON; auto-detected to derive repo/base/head/PR when no diff flags are passed. |
 | `GITLAB_CI` | `run` | Signals a GitLab CI environment; when set (and no diff flags are passed), repo/base/head/PR are derived from the predefined `CI_*` variables (`CI_PROJECT_PATH`, `CI_COMMIT_BEFORE_SHA`, `CI_COMMIT_SHA`, and the `CI_MERGE_REQUEST_*` family). |
 | `ANTHROPIC_API_KEY` | `run` (`--backend api`) | API key for the default `api` LLM backend. |
+| `CURSOR_API_KEY` | `run` (`--backend cursor`) | API key for the `cursor` backend (alternative to `cursor-agent login`). |
 
 <Note>
-With `--backend claude-code`, docsync reuses the local Claude Code CLI authentication, so no `ANTHROPIC_API_KEY` is required — intended for local development.
+With `--backend claude-code`, docsync reuses the local Claude Code CLI authentication, so no `ANTHROPIC_API_KEY` is required — intended for local development. Likewise, `--backend cursor` reuses your Cursor subscription via the `cursor-agent` CLI (`cursor-agent login` or `CURSOR_API_KEY`); note that Cursor reports no token usage, so cursor runs show no cost estimate.
 </Note>

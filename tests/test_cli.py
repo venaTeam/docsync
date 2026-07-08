@@ -165,3 +165,64 @@ def test_bootstrap_polish_flag_enables_readability_pass(tmp_path: Path, monkeypa
 
 def test_bootstrap_defaults_to_no_polish(tmp_path: Path, monkeypatch):
     assert _polish_smoke(tmp_path, monkeypatch, [])["readability_pass"] is False
+
+
+# ---------------------------------------------------------------------------
+# --backend flag vs config.backend precedence (on bootstrap)
+# ---------------------------------------------------------------------------
+
+
+def _backend_smoke(
+    tmp_path: Path, monkeypatch, extra_args: list[str], config_yml: str | None = None
+):
+    from docsync.models import BootstrapResult
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    if config_yml is not None:
+        (docs / ".docsync").mkdir()
+        (docs / ".docsync" / "config.yml").write_text(config_yml, encoding="utf-8")
+    src = tmp_path / "svc"
+    src.mkdir()
+    captured: dict = {}
+
+    def _fake_get_client(backend):
+        captured["backend"] = backend
+        return object()
+
+    monkeypatch.setattr("docsync.llm_backends.get_client", _fake_get_client)
+    monkeypatch.setattr(
+        "docsync.bootstrap.run_bootstrap",
+        lambda repos, docs_repo, config, **kwargs: BootstrapResult(repo="svc"),
+    )
+    result = runner.invoke(
+        app, ["bootstrap", "--docs-repo", str(docs), "--src-repo", f"svc={src}", *extra_args]
+    )
+    return result, captured
+
+
+def test_backend_defaults_to_api(tmp_path: Path, monkeypatch):
+    result, captured = _backend_smoke(tmp_path, monkeypatch, [])
+    assert result.exit_code == 0, result.output
+    assert captured["backend"] == "api"
+
+
+def test_backend_from_config(tmp_path: Path, monkeypatch):
+    result, captured = _backend_smoke(tmp_path, monkeypatch, [], config_yml="backend: cursor\n")
+    assert result.exit_code == 0, result.output
+    assert captured["backend"] == "cursor"
+
+
+def test_backend_flag_overrides_config(tmp_path: Path, monkeypatch):
+    result, captured = _backend_smoke(
+        tmp_path, monkeypatch, ["--backend", "cursor"], config_yml="backend: claude-code\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["backend"] == "cursor"
+
+
+def test_backend_flag_rejects_unknown_value(tmp_path: Path, monkeypatch):
+    result, captured = _backend_smoke(tmp_path, monkeypatch, ["--backend", "bogus"])
+    assert result.exit_code != 0
+    assert "must be one of" in result.output
+    assert "backend" not in captured  # never reached get_client

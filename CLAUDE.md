@@ -27,8 +27,10 @@ Two generation flows, plus onboarding/diagnostic commands:
 - **Lint/format is ruff only** (line-length 100, `src=["src"]`). No black/isort.
 - Models: edit/author = **Opus** (`claude-opus-4-8`), judge/critique/infer = **Haiku**
   (`claude-haiku-4-5`). Configurable via `ModelConfig`.
-- LLM **backends**: `api` (`ANTHROPIC_API_KEY`) or `claude-code` (shells to the local
-  `claude` CLI — free via subscription, used for local dogfooding).
+- LLM **backends**: `api` (`ANTHROPIC_API_KEY`), `claude-code` (shells to the local
+  `claude` CLI — free via subscription, used for local dogfooding), or `cursor` (shells
+  to the Cursor CLI `cursor-agent`; reports no token usage, so no cost estimate).
+  Selected via the `backend` config field or the `--backend` flag (flag wins).
 
 ## Commands
 

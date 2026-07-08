@@ -57,6 +57,18 @@ def test_load_config_valid_still_loads(tmp_path: Path):
     assert config.thoroughness == "high"
 
 
+def test_load_config_backend_field(tmp_path: Path):
+    docs = _write_config(tmp_path, "backend: cursor\n")
+    assert load_config(docs).backend == "cursor"
+
+
+def test_load_config_frames_bad_backend(tmp_path: Path):
+    docs = _write_config(tmp_path, "backend: nope\n")
+    with pytest.raises(ConfigError) as exc:
+        load_config(docs)
+    assert "backend" in str(exc.value)
+
+
 def test_run_surfaces_config_error_not_traceback(tmp_path: Path):
     docs = _write_config(tmp_path, "typoed_field: 1\n")
     (docsync_dir(docs) / "manifest.yml").write_text("pages: []\n", encoding="utf-8")

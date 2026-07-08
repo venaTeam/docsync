@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from docsync import style
 from docsync.bootstrap import (
     _extract_api_surface,
@@ -138,6 +140,15 @@ def test_plan_dedupes_existing_disk_and_nav(tmp_path):
     plan, skipped = plan_docs(_digests(tmp_path), docs, DocsyncConfig(), client=client)
     assert [p.page_path for p in plan.pages] == ["reference/incidents.mdx"]
     assert set(skipped) == {"reference/alerts.mdx", "services/api-gateway.mdx"}
+
+
+def test_plan_empty_docplan_raises_loudly(tmp_path):
+    # `DocPlan.pages` defaults to [], so a model that under-fills the schema would
+    # otherwise "succeed" into a silent 0-planned/0-authored run.
+    docs = _docs_repo(tmp_path)
+    client = FakeClient(DocPlan(pages=[]))
+    with pytest.raises(RuntimeError, match="empty DocPlan"):
+        plan_docs(_digests(tmp_path), docs, DocsyncConfig(), client=client)
 
 
 def test_plan_cap_after_dedupe_and_normalizes_ext(tmp_path):
