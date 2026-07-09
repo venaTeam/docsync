@@ -25,7 +25,10 @@ import re
 from fnmatch import fnmatch
 from pathlib import Path
 
+import frontmatter
+
 from . import ingest as ingest_mod
+from . import llm_backends
 from . import llm
 from . import polish as polish_mod
 from . import style
@@ -477,6 +480,38 @@ def build_author_prompt(
     return system, user
 
 
+def _repair_frontmatter(text: str, planned: PlannedPage, adapter) -> str:
+    """Fill missing/empty frozen frontmatter keys from the plan (deterministic).
+
+    A weak model sometimes ships a page without proper `---` delimiters or with an
+    empty `title`/`description` — data the planner already produced authoritatively
+    (`planned.title` / `planned.summary`). Like `repair_structure`, this runs before
+    the hard gate and only fills gaps (never overwrites an authored value); a page
+    with complete frontmatter passes through byte-identical. The result is still
+    validated by the caller, so nothing unsafe ships.
+    """
+    # A fenced frontmatter wrapper hides the keys from the parser; strip it first
+    # (backend-agnostic — the native-API path can embed the wrapper in the JSON
+    # string field too, where the CLI backends' reply unwrapping never runs).
+    text = llm_backends._unwrap_frontmatter_fence(text)
+    meta, body = adapter.split_frontmatter(text)
+    fills = {
+        "title": planned.title,
+        "description": planned.summary.strip() or planned.title,
+    }
+    missing = [
+        key
+        for key in adapter.frontmatter_keys_to_freeze()
+        if not (isinstance(meta.get(key), str) and meta[key].strip()) and fills.get(key)
+    ]
+    if not missing:
+        return text
+    for key in missing:
+        meta[key] = fills[key]
+    rebuilt = frontmatter.dumps(frontmatter.Post(body, **meta))
+    return rebuilt if rebuilt.endswith("\n") else rebuilt + "\n"
+
+
 def author_page(
     planned: PlannedPage,
     repo_units: dict[str, tuple[str, list[str]]],
@@ -560,6 +595,7 @@ def run_bootstrap(
         # </Note>) before the hard gate — recovers pages that cost real Opus spend.
         # The repaired text is what we validate and write, so nothing unsafe ships.
         text = adapter.repair_structure(text)
+        text = _repair_frontmatter(text, planned, adapter)
         # Opt-in readability pass (fact-frozen). Falls back to `text` on any failure, so a
         # bad polish never blocks an otherwise-valid authored page.
         polish_note = ""

@@ -35,6 +35,14 @@ CURSORS_FILE = "state/cursors.json"
 
 
 def docsync_dir(docs_repo: Path) -> Path:
+    """Return the path to the docs repo's `.docsync/` directory.
+
+    Args:
+        docs_repo: Root of the docs repository.
+
+    Returns:
+        The `docs_repo / ".docsync"` directory path (not guaranteed to exist).
+    """
     return Path(docs_repo) / DOCSYNC_DIR
 
 
@@ -184,6 +192,15 @@ def load_cursors(docs_repo: Path) -> dict[str, str]:
 
 
 def save_cursors(docs_repo: Path, cursors: dict[str, str]) -> None:
+    """Write the repo-to-head_sha cursor map to `.docsync/state/cursors.json`.
+
+    Serializes as indent-2, key-sorted JSON with a trailing newline, creating
+    the parent directory if it doesn't yet exist.
+
+    Args:
+        docs_repo: Root of the docs repository.
+        cursors: Mapping of source repo to its last processed head_sha.
+    """
     path = docsync_dir(docs_repo) / CURSORS_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(cursors, indent=2, sort_keys=True) + "\n")
@@ -195,6 +212,15 @@ def already_processed(docs_repo: Path, repo: str, head_sha: str) -> bool:
 
 
 def advance_cursor(docs_repo: Path, repo: str, head_sha: str) -> None:
+    """Record `head_sha` as the last processed cursor for `repo` and persist it.
+
+    Loads the current cursors, updates the entry for `repo`, and writes them back.
+
+    Args:
+        docs_repo: Root of the docs repository.
+        repo: Source repo whose cursor to advance.
+        head_sha: The head commit sha to store as processed.
+    """
     cursors = load_cursors(docs_repo)
     cursors[repo] = head_sha
     save_cursors(docs_repo, cursors)

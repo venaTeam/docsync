@@ -14,9 +14,11 @@ from pathlib import Path
 import pytest
 
 from docsync import style
+from docsync.adapters import make_adapter
 from docsync.bootstrap import (
     _extract_api_surface,
     _gather_excerpts,
+    _repair_frontmatter,
     _repo_units,
     _surface_for_file,
     author_page,
@@ -26,6 +28,7 @@ from docsync.bootstrap import (
     write_bootstrap,
 )
 from docsync.config import load_manifest
+from docsync.validate import validate_new_page
 from docsync.ingest import walk_repos
 from docsync.models import (
     AuthoredPage,
@@ -287,6 +290,65 @@ def test_run_bootstrap_parallel_preserves_order(tmp_path):
     cfg.max_parallel_requests = 4
     result = run_bootstrap([("gw", _gw(tmp_path))], docs, cfg, client=client)
     assert [o.page_path for o in result.outcomes] == paths
+
+
+# ---------------------------------------------------------------------------
+# _repair_frontmatter — fill missing frozen keys from the plan
+# ---------------------------------------------------------------------------
+
+
+_LONG_BODY = "# A Page\n\n" + ("This page documents the subsystem in detail. " * 8) + "\n"
+
+
+def test_repair_frontmatter_synthesizes_from_plan():
+    planned = _page("reference/a.mdx")
+    adapter = make_adapter("mintlify")
+    repaired = _repair_frontmatter(_LONG_BODY, planned, adapter)
+    meta, body = adapter.split_frontmatter(repaired)
+    assert meta["title"] == planned.title
+    assert meta["description"] == planned.summary
+    assert "# A Page" in body
+    assert validate_new_page("reference/a.mdx", repaired, adapter).passed
+
+
+def test_repair_frontmatter_fills_gaps_but_never_overwrites():
+    planned = _page("reference/a.mdx")
+    adapter = make_adapter("mintlify")
+    authored = "---\ntitle: Authored Title\n---\n\n" + _LONG_BODY
+    repaired = _repair_frontmatter(authored, planned, adapter)
+    meta, _ = adapter.split_frontmatter(repaired)
+    assert meta["title"] == "Authored Title"  # the model's value wins
+    assert meta["description"] == planned.summary  # only the gap is filled
+
+
+def test_repair_frontmatter_noop_on_complete_page():
+    planned = _page("reference/a.mdx")
+    adapter = make_adapter("mintlify")
+    assert _repair_frontmatter(_VALID_PAGE, planned, adapter) == _VALID_PAGE
+
+
+def test_repair_frontmatter_unwraps_yaml_fence_wrapper():
+    # The native-API path can carry the ```yaml wrapper inside the JSON string
+    # field (the CLI backends' reply unwrapping never runs there); the repair
+    # strips it so the authored keys are read, not clobbered by plan values.
+    planned = _page("reference/a.mdx")
+    adapter = make_adapter("mintlify")
+    wrapped = "```yaml\n---\ntitle: Authored\ndescription: Authored desc.\n---\n```\n\n" + _LONG_BODY
+    repaired = _repair_frontmatter(wrapped, planned, adapter)
+    assert "```" not in repaired
+    meta, _ = adapter.split_frontmatter(repaired)
+    assert meta == {"title": "Authored", "description": "Authored desc."}
+
+
+def test_run_bootstrap_repairs_missing_frontmatter(tmp_path):
+    # An authored page with no frontmatter is repaired from the plan and ships,
+    # instead of dropping with "missing or empty frontmatter".
+    docs = _docs_repo(tmp_path)
+    client = FakeClient(DocPlan(pages=[_page("reference/a.mdx")]), page_text=_LONG_BODY)
+    result = run_bootstrap([("gw", _gw(tmp_path))], docs, DocsyncConfig(), client=client)
+    (outcome,) = result.outcomes
+    assert outcome.applied
+    assert "title: Title reference/a.mdx" in outcome.new_content
 
 
 # ---------------------------------------------------------------------------

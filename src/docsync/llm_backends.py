@@ -53,6 +53,16 @@ _THINK_OPEN_RE = re.compile(r"\A\s*<think(?:ing)?>", re.IGNORECASE)
 # returning ```mdx\n<page>\n```. Anchored start+end so an *internal* fence in the
 # document body (a code sample) is never mistaken for the wrapper.
 _OUTER_FENCE_RE = re.compile(r"\A\s*```[A-Za-z0-9]*\n(.*?)\n?```\s*\Z", re.DOTALL)
+# A fence wrapping ONLY the frontmatter block (observed weak-model tic:
+# ```yaml\n---\ntitle: …\n---\n``` followed by the unfenced body). The closer must
+# sit immediately after the frontmatter's closing ---, so the non-greedy body can
+# never run past the frontmatter into the page's own code fences. Must be stripped
+# BEFORE _OUTER_FENCE_RE: on a body that happens to end with a code block, the
+# outer-fence regex would otherwise pair this wrapper's opener with that block's
+# closer and corrupt the document.
+_FM_FENCE_WRAPPER_RE = re.compile(
+    r"\A\s*```[A-Za-z0-9]*[ \t]*\n(---\n.*?\n---)[ \t]*\n```[ \t]*\n?", re.DOTALL
+)
 
 # Ceiling on a single CLI call. Generous — Opus authoring calls run for minutes —
 # but bounded, so a hung CLI (e.g. blocking on an interactive login prompt) fails
@@ -177,6 +187,11 @@ def _unwrap_outer_fence(text: str) -> str:
     """Strip a single ``` fence wrapping the *entire* reply, then trim surrounding space."""
     m = _OUTER_FENCE_RE.match(text)
     return (m.group(1) if m else text).strip()
+
+
+def _unwrap_frontmatter_fence(text: str) -> str:
+    """Strip a ``` fence wrapping only the leading frontmatter block, if present."""
+    return _FM_FENCE_WRAPPER_RE.sub(lambda m: m.group(1) + "\n", text, count=1)
 
 
 def _iter_dicts(node: Any):
@@ -409,8 +424,9 @@ class _Messages:
         """Whole-document output: take the raw reply as the single string field.
 
         The model returns the document directly (not JSON), so a full MDX page with
-        its own braces and code fences can't corrupt parsing. We strip only an outer
-        fence wrapping the entire reply and reject an empty body.
+        its own braces and code fences can't corrupt parsing. We strip only wrapper
+        fences — around the leading frontmatter block or around the entire reply,
+        in that order — and reject an empty body.
         """
         sys_text = (
             _system_text(system)
@@ -423,7 +439,7 @@ class _Messages:
         last_err: Exception | None = None
         for _ in range(2):
             raw, usage = self._run(mdl, sys_text, user_text, max_tokens)
-            content = _unwrap_outer_fence(_strip_reasoning(raw))
+            content = _unwrap_outer_fence(_unwrap_frontmatter_fence(_strip_reasoning(raw)))
             try:
                 if not content.strip():
                     raise ValueError("empty document reply")

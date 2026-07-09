@@ -218,6 +218,14 @@ class DocIndex:
     vectors: np.ndarray  # (n_chunks, dim), L2-normalized
 
     def save(self, cache_dir: Path) -> None:
+        """Persist this doc index to a cache directory.
+
+        Writes the vectors alongside metadata (model name, content hash, and
+        page paths) so the index can later be restored with `load`.
+
+        Args:
+            cache_dir: Directory to write the index files into.
+        """
         _save_index(
             cache_dir,
             self.vectors,
@@ -230,6 +238,18 @@ class DocIndex:
 
     @classmethod
     def load(cls, cache_dir: Path) -> "DocIndex | None":
+        """Load a previously saved doc index from a cache directory.
+
+        Returns None when no index files are present, or when the files found
+        belong to a code index rather than a doc index (detected by the absence
+        of a `page_paths` entry in the metadata).
+
+        Args:
+            cache_dir: Directory to read the index files from.
+
+        Returns:
+            The restored DocIndex, or None if nothing usable was found.
+        """
         loaded = _load_index_files(cache_dir)
         if loaded is None:
             return None
@@ -367,6 +387,15 @@ class CodeIndex:
     vectors: np.ndarray  # (n_units, dim), L2-normalized
 
     def save(self, cache_dir: Path) -> None:
+        """Persist this code index to a cache directory.
+
+        Writes the vectors alongside metadata (model name, content hash, and
+        unit keys). Each `(repo, path)` unit key is stored as a `[repo, path]`
+        pair because JSON has no tuple type; `load` restores the tuples.
+
+        Args:
+            cache_dir: Directory to write the index files into.
+        """
         _save_index(
             cache_dir,
             self.vectors,
@@ -380,6 +409,19 @@ class CodeIndex:
 
     @classmethod
     def load(cls, cache_dir: Path) -> "CodeIndex | None":
+        """Load a previously saved code index from a cache directory.
+
+        Returns None when no index files are present, or when the files found
+        belong to a doc index rather than a code index (detected by the absence
+        of a `unit_keys` entry in the metadata). The stored `[repo, path]` pairs
+        are restored to `(repo, path)` tuples.
+
+        Args:
+            cache_dir: Directory to read the index files from.
+
+        Returns:
+            The restored CodeIndex, or None if nothing usable was found.
+        """
         loaded = _load_index_files(cache_dir)
         if loaded is None:
             return None

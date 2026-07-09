@@ -112,6 +112,33 @@ def test_unwrap_outer_fence_only_strips_the_wrapper():
     assert be._unwrap_outer_fence(page) == page.strip()
 
 
+def test_unwrap_frontmatter_fence_strips_the_yaml_wrapper():
+    # A ```yaml fence around only the frontmatter is removed; the body's own
+    # fences are untouched.
+    wrapped = (
+        "```yaml\n---\ntitle: X\ndescription: d\n---\n```\n\n"
+        "# Body\n\n```bash\necho hi\n```\n\nmore text\n"
+    )
+    out = be._unwrap_frontmatter_fence(wrapped)
+    assert out.startswith("---\ntitle: X")
+    assert "```yaml" not in out
+    assert "```bash\necho hi\n```" in out
+    assert out.count("```") == 2  # only the body's real fence pair remains
+
+
+def test_unwrap_frontmatter_fence_noop_on_clean_pages():
+    # A proper page whose body contains a ```yaml code SAMPLE is byte-identical
+    # (the wrapper regex is anchored to the start of the reply).
+    page = "---\ntitle: X\ndescription: d\n---\n\nExample:\n\n```yaml\nkey: value\n```\n"
+    assert be._unwrap_frontmatter_fence(page) == page
+    # No frontmatter at all — nothing to unwrap.
+    assert be._unwrap_frontmatter_fence("# Just a body\n") == "# Just a body\n"
+    # A whole-reply wrapper (closer at end-of-text, not after ---) is not ours;
+    # it stays intact for _unwrap_outer_fence to handle.
+    whole = "```mdx\n---\ntitle: X\n---\n\nbody\n```"
+    assert be._unwrap_frontmatter_fence(whole) == whole
+
+
 def test_parse_text_field_takes_raw_document(monkeypatch):
     # The model returns a full MDX page (NOT JSON); it must pass through verbatim
     # even though it contains braces (cols={2}) and an internal code fence.
@@ -151,6 +178,32 @@ def test_parse_text_field_unwraps_fenced_reply(monkeypatch):
         output_format=AuthoredPage, system="s", messages=[{"role": "user", "content": "q"}]
     )
     assert resp.parsed_output.content == page.strip()
+
+
+def test_parse_text_field_unwraps_frontmatter_fence_before_outer(monkeypatch):
+    # Regression: a ```yaml-fenced frontmatter on a document whose body ENDS with a
+    # real code block. _OUTER_FENCE_RE alone would pair the yaml opener with that
+    # block's closer (its \Z anchor sees a fence at end-of-text) and corrupt the
+    # page; the frontmatter unwrap must run first and defuse it.
+    reply = (
+        "```yaml\n---\ntitle: X\ndescription: y\n---\n```\n\n"
+        "# Body\n\n```bash\necho hi\n```\n"
+    )
+
+    def fake_run(cmd, input, **kwargs):
+        return type("P", (), {"returncode": 0, "stdout": _fake_envelope(reply),
+                              "stderr": ""})()
+
+    monkeypatch.setattr(be.subprocess, "run", fake_run)
+    monkeypatch.setattr(be.shutil, "which", lambda _: "/usr/bin/claude")
+    client = be.ClaudeCodeClient()
+    resp = client.messages.parse(
+        output_format=AuthoredPage, system="s", messages=[{"role": "user", "content": "q"}]
+    )
+    content = resp.parsed_output.content
+    assert content.startswith("---\ntitle: X")
+    assert "```bash\necho hi\n```" in content  # last block kept its closer
+    assert content.count("```") == 2  # wrapper markers gone, real pair intact
 
 
 def test_parse_text_field_retries_then_raises_on_empty(monkeypatch):

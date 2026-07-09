@@ -36,6 +36,18 @@ ALLOW = [
 
 
 def main() -> None:
+    """Vendor a Hugging Face model into the package's `_models` directory.
+
+    Parses `--model` and `--dest` command-line arguments, downloads the model
+    snapshot (restricted to the `ALLOW` patterns) into a subdirectory named after
+    the model, prefers safetensors by removing a duplicate `pytorch_model.bin` when
+    `model.safetensors` is present, verifies the download, and prints the vendored
+    location, total size in MB, and the next build step.
+
+    Raises:
+        SystemExit: If no `config.json` is found under the destination directory,
+            indicating the vendor step failed.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default=DEFAULT_MODEL, help="HF model id to vendor.")
     ap.add_argument(

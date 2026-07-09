@@ -155,6 +155,20 @@ class _MeteredMessages:
         self._meter = meter
 
     def parse(self, *args: Any, **kwargs: Any) -> Any:
+        """Proxy `parse` to the wrapped client and record the response's usage.
+
+        Delegates to the inner client's `parse`, then meters the returned response's
+        `usage` against the `model` keyword argument, attributing the spend to the
+        current pipeline stage from `current_stage`.
+
+        Args:
+            *args: Positional arguments forwarded verbatim to the inner `parse`.
+            **kwargs: Keyword arguments forwarded to the inner `parse`; `model` is
+                also read to price the recorded usage.
+
+        Returns:
+            The response object returned by the inner client's `parse`, unchanged.
+        """
         resp = self._inner.parse(*args, **kwargs)
         self._meter.record(
             kwargs.get("model"), getattr(resp, "usage", None), stage=current_stage.get()

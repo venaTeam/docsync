@@ -26,6 +26,20 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def branch_name(repo: str, head_sha: str) -> str:
+    """Build the docsync branch name for a repo's head commit.
+
+    Derives a short repo slug from the last path segment of the repo identifier and
+    combines it with the first eight characters of the head SHA.
+
+    Args:
+        repo: Repository identifier (e.g. "owner/name"); the segment after the last
+            "/" is used as the slug.
+        head_sha: Commit SHA of the head being processed; only its first eight
+            characters are included.
+
+    Returns:
+        A branch name of the form "docsync/{slug}-{head_sha[:8]}".
+    """
     slug = repo.split("/")[-1]
     return f"docsync/{slug}-{head_sha[:8]}"
 

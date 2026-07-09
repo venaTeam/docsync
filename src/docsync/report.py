@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 
 from .cost import render_usage_console, render_usage_md
-from .models import BootstrapResult, InferResult, PipelineResult
+from .models import BootstrapResult, DocstringResult, InferResult, PipelineResult
 
 
 def _unified(page_path: str, before: str, after: str) -> str:
@@ -209,3 +209,86 @@ def infer_console_summary(result: InferResult) -> str:
     if cost_line:
         out.append(cost_line)
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Docstrings (in-place Python docstring generation)
+# ---------------------------------------------------------------------------
+
+
+_DOCSTRING_MARKS = {"documented": "✓", "skipped": "·", "invalid": "✗", "no_change": "~"}
+
+
+def _group_by_path(outcomes: list) -> dict[str, list]:
+    """Group outcomes by their source path, preserving first-seen order."""
+    grouped: dict[str, list] = {}
+    for o in outcomes:
+        grouped.setdefault(o.path, []).append(o)
+    return grouped
+
+
+def docstring_console_summary(result: DocstringResult) -> str:
+    """Short terminal summary for docstring generation, grouped by source file.
+
+    Header shows counts per status (`✓` documented, `·` skipped, `✗` invalid, `~`
+    no_change) and the number of files changed. Each file then lists its symbols as
+    `qualname (kind)` with the matching status mark.
+    """
+    counts = {status: 0 for status in _DOCSTRING_MARKS}
+    for o in result.outcomes:
+        counts[o.status] = counts.get(o.status, 0) + 1
+    out = [
+        f"docsync docstrings: {counts['documented']} documented, {counts['skipped']} skipped, "
+        f"{counts['invalid']} invalid, {counts['no_change']} no_change; "
+        f"{len(result.changed_paths())} file(s) changed."
+    ]
+    for path, outcomes in _group_by_path(result.outcomes).items():
+        out.append(f"  {path}")
+        for o in outcomes:
+            mark = _DOCSTRING_MARKS.get(o.status, "·")
+            note = f" — {o.note}" if o.note else ""
+            out.append(f"    {mark} {o.qualname} ({o.kind}){note}")
+    cost_line = render_usage_console(result.usage)
+    if cost_line:
+        out.append(cost_line)
+    return "\n".join(out)
+
+
+def docstring_report(result: DocstringResult) -> str:
+    """Markdown report body for a docstring run: counts + per-file symbol status."""
+    counts = {status: 0 for status in _DOCSTRING_MARKS}
+    for o in result.outcomes:
+        counts[o.status] = counts.get(o.status, 0) + 1
+    lines: list[str] = []
+    lines.append("## docsync — generated Python docstrings")
+    lines.append("")
+    lines.append(
+        f"Documented {counts['documented']} symbol(s) across "
+        f"{len(result.changed_paths())} file(s)."
+    )
+    lines.append("")
+    lines.append(f"- **documented**: {counts['documented']}")
+    lines.append(f"- **skipped**: {counts['skipped']}")
+    lines.append(f"- **invalid**: {counts['invalid']}")
+    lines.append(f"- **no_change**: {counts['no_change']}")
+    lines.append("")
+
+    for path, outcomes in _group_by_path(result.outcomes).items():
+        lines.append(f"### `{path}`")
+        for o in outcomes:
+            mark = _DOCSTRING_MARKS.get(o.status, "·")
+            note = f" — {o.note}" if o.note else ""
+            lines.append(f"- {mark} `{o.qualname}` ({o.kind}){note}")
+        lines.append("")
+
+    usage_lines = render_usage_md(result.usage)
+    if usage_lines:
+        lines.extend(usage_lines)
+        lines.append("")
+
+    lines.append("---")
+    lines.append(
+        "_Opened by [docsync](https://github.com/keephq/docsync). These docstrings were "
+        "generated from the source — review for accuracy before merging._"
+    )
+    return "\n".join(lines)

@@ -30,6 +30,33 @@ from .models import DocsyncConfig, Manifest, ModelStageRecord, RunRecord
 
 
 class DashboardStats(BaseModel):
+    """Aggregate run/bootstrap statistics rendered on the dashboard.
+
+    Counts totals for both commands (runs, pages, cost, calls) alongside
+    cache-hit and success rates. The edit-drop health fields track the `run`
+    command only: a page counts as attempted once the editor was actually
+    invoked on it (deliberate skips from the max-pages cap or the confidence
+    floor are excluded), and a drop is an attempted page whose editor output a
+    gate rejected (validation, self-critique, non-applicable find, or error);
+    a correct no-change dilutes the rate as a processed page should.
+
+    Attributes:
+        total_runs: Combined number of run and bootstrap invocations recorded.
+        run_runs: Number of `run` command invocations.
+        bootstrap_runs: Number of `bootstrap` command invocations.
+        pages_updated: Pages edited by `run`.
+        pages_authored: Pages authored by `bootstrap`.
+        total_cost_usd: Total LLM cost in USD across all recorded activity.
+        total_calls: Total number of LLM calls.
+        avg_cache_hit_rate: Average prompt-cache hit rate.
+        success_rate: Fraction of invocations that succeeded.
+        pages_attempted: Pages the editor was actually invoked on (`run` only).
+        pages_dropped: Attempted pages whose editor output a gate rejected.
+        drop_rate: Fraction of attempted pages that were dropped.
+        drops_by_reason: Count of drops keyed by rejection reason.
+        first_ts: Timestamp of the earliest recorded activity, if any.
+        last_ts: Timestamp of the most recent recorded activity, if any.
+    """
     total_runs: int = 0
     run_runs: int = 0
     bootstrap_runs: int = 0
@@ -145,6 +172,15 @@ def model_stage_breakdown(runs: list[RunRecord]) -> list[ModelStageRecord]:
 
 
 class BudgetStatus(BaseModel):
+    """Monthly spend tracked against an optional budget.
+
+    Attributes:
+        budget_usd: Configured monthly budget in USD, or None if unset.
+        month_spend: Spend so far this month in USD.
+        projected_usd: Projected end-of-month spend in USD, or None.
+        over_budget: Whether spending has exceeded the budget.
+        fraction_elapsed: Fraction of the month that has elapsed.
+    """
     budget_usd: Optional[float] = None
     month_spend: float = 0.0
     projected_usd: Optional[float] = None
@@ -201,6 +237,19 @@ def budget_status(runs: list[RunRecord], config: DocsyncConfig, *, now: datetime
 
 
 class HealthPanel(BaseModel):
+    """Configuration and manifest health summary for the dashboard.
+
+    Attributes:
+        edit_model: Model used for the edit/author stage.
+        judge_model: Model used for the judge/critique stage.
+        docs_root: Configured docs root path.
+        thresholds: Configured numeric thresholds keyed by name.
+        manifest_pages: Number of pages declared in the manifest.
+        manifest_anchors: Number of anchors declared across the manifest.
+        cursors: Last processed head per repo, keyed by repo.
+        doctor_ok: Whether the doctor check passed, or None if not run.
+        doctor_issues: Issues reported by the doctor check.
+    """
     edit_model: str = ""
     judge_model: str = ""
     docs_root: str = "."
