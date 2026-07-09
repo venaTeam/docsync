@@ -219,6 +219,62 @@ def symbol_source(source_text: str, target: SymbolTarget) -> str:
     return "\n".join(lines[start - 1 : end])
 
 
+@dataclass
+class DocSample:
+    """One existing docstring, sampled from source to learn a repo's house style."""
+
+    qualname: str
+    kind: str  # "module" | "class" | "function" | "method"
+    signature: str
+    docstring: str
+
+
+def collect_docstrings(
+    source_text: str,
+    *,
+    include_private: bool = False,
+    targets: list[str] | tuple[str, ...] = ("class", "function", "method"),
+) -> list[DocSample]:
+    """Extract the *existing* docstrings of public symbols in a Python source file.
+
+    The read-only counterpart to `iter_targets`: where that finds symbols *lacking* a
+    docstring to write one, this returns the docstrings symbols *already have* so the
+    `docstring-style` utility can distil the repo's house format. Applies the same
+    public-symbol filter and `kinds` selection; a syntactically invalid file yields [].
+    """
+    kinds = set(targets)
+    try:
+        tree = ast.parse(source_text)
+    except (SyntaxError, ValueError):
+        return []
+
+    out: list[DocSample] = []
+
+    if "module" in kinds:
+        doc = ast.get_docstring(tree)
+        if doc:
+            out.append(DocSample("<module>", "module", "module", doc.strip()))
+
+    def sample(node: ast.AST, qualname: str, kind: str) -> None:
+        if not _wanted(node.name, include_private=include_private):  # type: ignore[attr-defined]
+            return
+        doc = ast.get_docstring(node)
+        if doc:
+            out.append(DocSample(qualname, kind, _signature(node), doc.strip()))
+
+    for node in tree.body:
+        if isinstance(node, _FUNC_TYPES) and "function" in kinds:
+            sample(node, node.name, "function")
+        elif isinstance(node, ast.ClassDef):
+            if "class" in kinds:
+                sample(node, node.name, "class")
+            if "method" in kinds:
+                for sub in node.body:
+                    if isinstance(sub, _FUNC_TYPES):
+                        sample(sub, f"{node.name}.{sub.name}", "method")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Rendering + splicing docstrings into source text
 # ---------------------------------------------------------------------------

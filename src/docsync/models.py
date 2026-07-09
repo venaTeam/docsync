@@ -617,6 +617,19 @@ class FileDocstrings(BaseModel):
     items: list[SymbolDocstring] = Field(default_factory=list)
 
 
+class DocstringStyleSpec(BaseModel):
+    """A distilled, reusable docstring format — the `docstring-style` utility's output.
+
+    Produced by the style-inference judge from a sample of a repo's existing docstrings,
+    then rendered to a `style_prompt_file` the `custom` format loads verbatim. Three
+    string fields (never a single required str) so the CLI backends route it as JSON.
+    """
+
+    name: str  # short label, e.g. "house-google" or "terse-oneline"
+    guidance: str  # the reusable format rules the generator should follow
+    example: str  # one canonical docstring body (text only, no surrounding quotes)
+
+
 # "documented" = written; "skipped" = nothing to do (already documented, one-liner, no
 # generation returned); "invalid" = the AST-equality gate rejected the file (not written).
 DocstringStatus = Literal["documented", "skipped", "invalid", "no_change"]

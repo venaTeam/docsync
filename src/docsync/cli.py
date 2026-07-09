@@ -16,6 +16,7 @@ from . import bootstrap as bootstrap_mod
 from . import config as cfg
 from . import diff as diff_mod
 from . import docstrings as docstrings_mod
+from . import docstyle as docstyle_mod
 from . import pipeline as pipeline_mod
 from . import pr as pr_mod
 from . import report as report_mod
@@ -609,6 +610,71 @@ def infer(
 
     added = infer_mod.write_infer(result, docs_repo, config)
     typer.echo(f"docsync: wrote {len(added)} anchor(s) to .docsync/manifest.yml.")
+
+
+@app.command(name="docstring-style")
+def docstring_style(
+    docs_repo: Path = typer.Option(Path("."), help="Docs repo (.docsync/ lives here; the style file is written under it)."),
+    src_repo: Optional[List[str]] = typer.Option(
+        None,
+        help="Source repo to LEARN the style from (read-only), as 'name=path' or a bare "
+        "path. Repeatable. Required unless --blank.",
+    ),
+    blank: bool = typer.Option(
+        False, "--blank", help="Scaffold an empty editable template (no LLM) instead of "
+        "inferring the style from existing docstrings."
+    ),
+    out: str = typer.Option(
+        docstyle_mod.DEFAULT_STYLE_FILE,
+        help="Where to write the style file, relative to the docs repo.",
+    ),
+    max_samples: int = typer.Option(
+        40, help="Max existing docstrings sampled to infer the style (cost control)."
+    ),
+    write: bool = typer.Option(
+        False, help="Write the style file (default: print it and where it would go)."
+    ),
+    backend: Optional[str] = typer.Option(None, help=f"For the inference judge — {_BACKEND_HELP}"),
+):
+    """Define a custom docstring format — infer a repo's house style, or scaffold a template.
+
+    The generated file is loaded verbatim by `docstrings.format: custom`, so once written,
+    set `format: custom` and `style_prompt_file: <out>` in .docsync/config.yml (snippet
+    printed on success) and the docstring stage writes to your format — no code change.
+    """
+    config = _load_config(docs_repo)
+
+    if blank:
+        text = docstyle_mod.scaffold_template()
+    else:
+        if not src_repo:
+            raise typer.BadParameter("infer mode needs --src-repo (or pass --blank).")
+        from .llm_backends import get_client
+
+        repos = [_parse_repo_spec(item) for item in src_repo]
+        client = get_client(_resolve_backend(config, backend))
+        try:
+            spec, samples, usage = docstyle_mod.infer_style(
+                repos, config, client=client, max_samples=max_samples
+            )
+        except ValueError as exc:
+            typer.echo(f"docsync: {exc}")
+            raise typer.Exit(1) from exc
+        from .cost import render_usage_console
+
+        text = docstyle_mod.render_style_markdown(spec)
+        typer.echo(
+            f"docsync: inferred style '{spec.name}' from {len(samples)} docstring(s). "
+            f"{render_usage_console(usage)}"
+        )
+
+    path = docstyle_mod.write_style_file(docs_repo, text, out=out, dry_run=not write)
+    if write:
+        typer.echo(f"docsync: wrote style file -> {path}")
+        typer.echo("Add to .docsync/config.yml:\n" + docstyle_mod.config_snippet(out))
+    else:
+        typer.echo(f"--- {path} (dry run; use --write to save) ---\n{text}")
+        typer.echo("Then add to .docsync/config.yml:\n" + docstyle_mod.config_snippet(out))
 
 
 @app.command()
