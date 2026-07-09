@@ -15,6 +15,7 @@ import typer
 from . import bootstrap as bootstrap_mod
 from . import config as cfg
 from . import diff as diff_mod
+from . import docstrings as docstrings_mod
 from . import pipeline as pipeline_mod
 from . import pr as pr_mod
 from . import report as report_mod
@@ -57,6 +58,54 @@ def _resolve_backend(config, value: Optional[str]) -> str:
     if value not in _BACKENDS:
         raise typer.BadParameter(f"--backend must be one of {', '.join(_BACKENDS)}")
     return value
+
+
+_DOCSTRING_HELP = (
+    "Write/refresh Google-style docstrings (format configurable) into the SOURCE files "
+    "before the docs stage, so the freshly documented code informs authoring. Written in "
+    "place into the --src-repo checkout (no PR). Runs the docs stage too, unless no "
+    "adapter flag (--mintlify/--docusaurus) is given, in which case only docstrings run."
+)
+
+
+def _resolve_adapter_flags(config, mintlify: bool, docusaurus: bool) -> bool:
+    """Apply the mutually-exclusive --mintlify/--docusaurus flags onto `config.adapter`.
+
+    Returns True when an adapter flag was passed. Combined with --docstring this keeps the
+    docs stage on (`generate_docs = adapter_flag or not docstring`); without --docstring
+    the docs stage always runs and the flag only selects the adapter.
+    """
+    if mintlify and docusaurus:
+        raise typer.BadParameter("--mintlify and --docusaurus are mutually exclusive")
+    if mintlify:
+        config.adapter = "mintlify"
+    elif docusaurus:
+        config.adapter = "docusaurus"
+    return mintlify or docusaurus
+
+
+def _run_docstring_stage(repos, config, *, docs_repo, client, diff, apply: bool):
+    """Run + report + (optionally) write the docstring stage. Returns the DocstringResult.
+
+    `apply` gates the in-place write (dry run when False). `diff` scopes the stage to the
+    touched symbols for `run`; pass None for `bootstrap` (document every public symbol).
+    """
+    result = docstrings_mod.run_docstrings(
+        repos, config, diff=diff, docs_repo=docs_repo, client=client
+    )
+    typer.echo(report_mod.docstring_console_summary(result))
+    if not result.documented():
+        typer.echo("docsync: no docstrings to write.")
+        return result
+    written = docstrings_mod.write_docstrings(result, dry_run=not apply)
+    if apply:
+        typer.echo(f"docsync: wrote docstrings into {len(written)} source file(s).")
+    else:
+        typer.echo(
+            f"docsync: dry run — {len(written)} source file(s) would get docstrings "
+            "(not written). Use --no-dry-run to apply."
+        )
+    return result
 
 
 def _load_config(docs_repo: Path):
@@ -168,6 +217,9 @@ def run(
         help="Max concurrent LLM requests for the judge + edit stages. "
         "Overrides config.max_parallel_requests.",
     ),
+    docstring: bool = typer.Option(False, "--docstring", help=_DOCSTRING_HELP),
+    mintlify: bool = typer.Option(False, "--mintlify", help="Sync a Mintlify docs site (sets the adapter)."),
+    docusaurus: bool = typer.Option(False, "--docusaurus", help="Sync a Docusaurus docs site (sets the adapter)."),
     preflight: bool = typer.Option(
         True,
         help="Pre-flight the manifest (doctor) and abort before any LLM spend if it "
@@ -226,6 +278,24 @@ def run(
     client = get_client(_resolve_backend(config, backend))
 
     diff = _resolve_diff(src_repo, base, head, pr_number, pr_title, from_event)
+
+    # Docstrings first: document the diff's touched symbols in the source checkout so the
+    # doc-sync stage below sees them. --docstring alone (no adapter flag) skips doc sync.
+    adapter_flag = _resolve_adapter_flags(config, mintlify, docusaurus)
+    generate_docs = adapter_flag or not docstring
+    if docstring:
+        src_path = Path(src_repo) if src_repo else None
+        if src_path is None or not (src_path.exists() and (src_path / ".git").exists()):
+            raise typer.BadParameter(
+                "--docstring requires a local --src-repo checkout to write into "
+                "(a GitHub owner/name has no local files); pass a local repo path."
+            )
+        _run_docstring_stage(
+            [(diff.repo, str(src_path))], config, docs_repo=docs_repo, client=client,
+            diff=diff, apply=(not dry_run) or open_pr,
+        )
+        if not generate_docs:
+            raise typer.Exit(0)
 
     # In a mono repo the diff also carries the docs subtree; filter it so a merged doc
     # change doesn't map onto itself and drive further doc edits.
@@ -367,6 +437,9 @@ def bootstrap(
         None, help="Max concurrent author requests. Overrides config.max_parallel_requests."
     ),
     force: bool = typer.Option(False, help="Overwrite existing page files (default: skip)."),
+    docstring: bool = typer.Option(False, "--docstring", help=_DOCSTRING_HELP),
+    mintlify: bool = typer.Option(False, "--mintlify", help="Generate a Mintlify docs site (sets the adapter)."),
+    docusaurus: bool = typer.Option(False, "--docusaurus", help="Generate a Docusaurus docs site (sets the adapter)."),
     check_links: bool = typer.Option(
         False, help="Run the active adapter's broken-link soft gate (no-op for adapters "
         "without a link checker, e.g. plain markdown)."
@@ -405,6 +478,19 @@ def bootstrap(
     _apply_thoroughness(config, thoroughness)
 
     client = get_client(_resolve_backend(config, backend))
+
+    # Docstrings first: write them into the source checkout so the docs stage re-ingests
+    # the freshly documented code. --docstring alone (no adapter flag) skips the site.
+    adapter_flag = _resolve_adapter_flags(config, mintlify, docusaurus)
+    generate_docs = adapter_flag or not docstring
+    if docstring:
+        _run_docstring_stage(
+            repos, config, docs_repo=docs_repo, client=client,
+            diff=None, apply=(not dry_run) or open_pr,
+        )
+        if not generate_docs:
+            raise typer.Exit(0)
+
     result = bootstrap_mod.run_bootstrap(
         repos, docs_repo, config,
         max_pages=max_pages, check_links=check_links, plan_only=plan_only, client=client,

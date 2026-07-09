@@ -141,6 +141,11 @@ class DocusaurusAdapter(DocAdapter):
         return dict(post.metadata), post.content
 
     def frontmatter_keys_to_freeze(self) -> list[str]:
+        """Return the frontmatter keys that must be preserved unchanged.
+
+        Returns:
+            The list of frozen frontmatter keys: "title" and "description".
+        """
         return ["title", "description"]
 
     # -- authoring / additive-edit policy ---------------------------------
@@ -150,6 +155,16 @@ class DocusaurusAdapter(DocAdapter):
         return _KNOWN_ADMONITIONS | {"TabItem"}
 
     def authoring_components_hint(self) -> str:
+        """Return guidance for authoring Docusaurus Markdown components.
+
+        Describes how to use admonitions (`:::note`, `:::tip`, `:::warning`, `:::info`,
+        `:::danger`) opened and closed with `:::` lines, permits `<Tabs>`/`<TabItem>` in
+        .mdx pages, and requires that callouts stay balanced and that code/mermaid fences
+        and block nesting are left intact.
+
+        Returns:
+            The authoring hint text describing allowed and disallowed component edits.
+        """
         return (
             "This page uses Docusaurus Markdown. For callouts use admonitions — :::note, "
             ":::tip, :::warning, :::info, :::danger — each opened with a `:::<type>` line "

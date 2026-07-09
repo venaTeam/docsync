@@ -14,6 +14,20 @@ from pathlib import Path
 
 
 class DocAdapter(ABC):
+    """Abstract interface a documentation framework must implement for docsync.
+
+    A concrete adapter teaches the pipeline how to recognize its pages, read and
+    freeze frontmatter, fingerprint and repair page structure, describe its authoring
+    components to the LLM prompts, check for broken links, and manage the framework's
+    navigation and config files. Most structural/nav/config hooks have safe defaults
+    (no-op or plain-Markdown behavior), so a minimal framework only has to implement
+    the abstract methods; `mintlify` is the only shipped adapter.
+
+    Attributes:
+        name: Identifier of the framework this adapter handles.
+        page_extension: Extension given to a new page when the author omits one
+            (default ".mdx"); used by bootstrap when normalizing a proposed page path.
+    """
     name: str
     # The extension a NEW page should get when the model/author omits one. Mintlify
     # uses `.mdx`; a plain-Markdown framework uses `.md`. Used by bootstrap when it

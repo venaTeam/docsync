@@ -56,6 +56,11 @@ class MarkdownAdapter(DocAdapter):
         return dict(post.metadata), post.content
 
     def frontmatter_keys_to_freeze(self) -> list[str]:
+        """Return the frontmatter keys whose values must stay frozen across edits.
+
+        Returns:
+            The keys ``title`` and ``description``, which edits may not change.
+        """
         return ["title", "description"]
 
     # -- structural fingerprint -------------------------------------------

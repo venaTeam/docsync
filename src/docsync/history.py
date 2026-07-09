@@ -50,6 +50,16 @@ _DIFF_MAX_LINES = 120
 
 
 def runs_path(docs_repo: Path) -> Path:
+    """Return the path to the run-history JSONL file for a docs repo.
+
+    Resolves `<docs-repo>/.docsync/state/runs.jsonl` (the `RUNS_FILE` under the repo's docsync directory) where distilled `RunRecord`s are appended.
+
+    Args:
+        docs_repo: Root of the docs repository whose docsync state directory holds the runs file.
+
+    Returns:
+        The path to the runs JSONL file; the file itself may not yet exist.
+    """
     return cfg.docsync_dir(docs_repo) / RUNS_FILE
 
 

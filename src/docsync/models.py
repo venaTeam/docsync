@@ -38,6 +38,14 @@ def _prompt_tokens(usage) -> int:
 
 
 class FileStatus(str, Enum):
+    """Enumerate how a file was touched by a diff.
+
+    Attributes:
+        ADDED: The file was newly added.
+        MODIFIED: The file's contents changed.
+        REMOVED: The file was deleted.
+        RENAMED: The file was renamed (ChangedFile.previous_path holds the old path).
+    """
     ADDED = "added"
     MODIFIED = "modified"
     REMOVED = "removed"
@@ -68,6 +76,11 @@ class CodeDiff(BaseModel):
     files: list[ChangedFile] = Field(default_factory=list)
 
     def changed_paths(self) -> list[str]:
+        """Collect every file path referenced by the diff.
+
+        Returns:
+            The current path of each changed file, plus the pre-rename path for any file that was renamed.
+        """
         out: list[str] = []
         for f in self.files:
             out.append(f.path)
@@ -76,6 +89,11 @@ class CodeDiff(BaseModel):
         return out
 
     def all_symbols(self) -> list[str]:
+        """Return the changed code symbols across all files, de-duplicated.
+
+        Returns:
+            Each file's changed_symbols flattened into one list, keeping the first occurrence and preserving order.
+        """
         return _dedupe_preserving_order(s for f in self.files for s in f.changed_symbols)
 
 
@@ -105,6 +123,11 @@ class RepoDigest(BaseModel):
     units: list[SourceUnit] = Field(default_factory=list)
 
     def all_symbols(self) -> list[str]:
+        """Return every symbol across the digest's source units, de-duplicated.
+
+        Returns:
+            Each unit's symbols flattened into one list, keeping the first occurrence and preserving order.
+        """
         return _dedupe_preserving_order(s for u in self.units for s in u.symbols)
 
 
@@ -247,13 +270,33 @@ class ManifestPage(BaseModel):
 
 
 class Manifest(BaseModel):
+    """The full page-to-source mapping loaded from the manifest.
+
+    Attributes:
+        pages: The documentation pages and the code anchors that keep each one live.
+    """
     pages: list[ManifestPage] = Field(default_factory=list)
 
     def page(self, path: str) -> Optional[ManifestPage]:
+        """Look up the manifest entry for a page by its path.
+
+        Args:
+            path: Page path (relative to the docs repo root) to find.
+
+        Returns:
+            The matching ManifestPage, or None if no page has that path.
+        """
         return next((p for p in self.pages if p.path == path), None)
 
 
 class ModelConfig(BaseModel):
+    """LLM model selection for the pipeline's stages.
+
+    Attributes:
+        edit_model: Model used for authoring and surgical edits (Opus).
+        judge_model: Model used for the relevance judge, self-critique, and infer (Haiku).
+        edit_effort: Opus reasoning effort for author and edit calls.
+    """
     edit_model: str = Field(
         default="claude-opus-4-8", description="Model for authoring + surgical edits (Opus)."
     )
@@ -263,6 +306,61 @@ class ModelConfig(BaseModel):
     )
     edit_effort: str = Field(
         default="high", description="Opus reasoning effort for author + edit calls."
+    )
+
+
+# The symbol kinds the docstring stage can document. `module` is opt-in (off by default)
+# because a module docstring is a whole-file summary, not a per-symbol one.
+DocstringTarget = Literal["module", "class", "function", "method"]
+
+
+class DocstringConfig(BaseModel):
+    """Config for the code-level docstring stage (`--docstring`), under `docstrings:`.
+
+    The MVP writes Google-style docstrings, but `format` is user-configurable: pick a
+    built-in (`google` | `numpy` | `rest`) or `custom` and supply your own format spec via
+    `style_prompt` (inline) or `style_prompt_file` (a path relative to the docs repo, e.g.
+    `.docsync/docstring_style.md`). Placement is format-agnostic, so a custom format needs
+    no code — the spec is injected into the generate prompt and the model writes to it.
+    """
+
+    format: Literal["google", "numpy", "rest", "custom"] = Field(
+        default="google",
+        description=(
+            "Docstring format. 'google' (MVP, full), 'numpy'/'rest' (built-in specs), or "
+            "'custom' — supply your own via style_prompt / style_prompt_file."
+        ),
+    )
+    style_prompt: Optional[str] = Field(
+        default=None,
+        description="Inline custom format spec + example (used when format='custom').",
+    )
+    style_prompt_file: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path (relative to the docs repo) to a file holding the custom format spec + "
+            "example (used when format='custom'). Takes effect if style_prompt is unset."
+        ),
+    )
+    include_private: bool = Field(
+        default=False,
+        description="Also document _private symbols (dunders are always skipped).",
+    )
+    overwrite_existing: bool = Field(
+        default=False,
+        description="Re-generate docstrings for symbols that already have one.",
+    )
+    targets: list[DocstringTarget] = Field(
+        default_factory=lambda: ["class", "function", "method"],
+        description="Which symbol kinds to document. Add 'module' for file-level docstrings.",
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Model override for docstring generation (defaults to models.edit_model).",
+    )
+    max_symbols_per_run: int = Field(
+        default=0,
+        description="Hard cap on symbols documented per run; 0 = unlimited.",
     )
 
 
@@ -277,6 +375,10 @@ class DocsyncConfig(BaseModel):
 
     models: ModelConfig = Field(
         default_factory=ModelConfig, description="LLM model choices (see ModelConfig)."
+    )
+    docstrings: DocstringConfig = Field(
+        default_factory=DocstringConfig,
+        description="Code-level docstring stage settings (see DocstringConfig).",
     )
     backend: Literal["api", "gateway", "claude-code", "cursor"] = Field(
         default="api",
@@ -431,6 +533,12 @@ class DocsyncConfig(BaseModel):
 
 
 class CandidateSource(str, Enum):
+    """Identify how an impact candidate page was surfaced.
+
+    Attributes:
+        ANCHOR: The page matched a manifest anchor.
+        EMBEDDING: The page was surfaced by the embeddings recall-net.
+    """
     ANCHOR = "anchor"
     EMBEDDING = "embedding"
 
@@ -487,11 +595,58 @@ class PageEdit(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Code-level docstrings (docstrings.py / pysymbols.py)
+# ---------------------------------------------------------------------------
+
+
+class SymbolDocstring(BaseModel):
+    """The generated docstring body for one symbol (LLM output).
+
+    `docstring` is the docstring TEXT ONLY — no surrounding triple quotes, no code, no
+    signature. `qualname` ties it back to the located `SymbolTarget`; placement is done
+    deterministically by the splicer, never by the model.
+    """
+
+    qualname: str
+    docstring: str
+
+
+class FileDocstrings(BaseModel):
+    """The generate stage's structured response for one source file."""
+
+    items: list[SymbolDocstring] = Field(default_factory=list)
+
+
+# "documented" = written; "skipped" = nothing to do (already documented, one-liner, no
+# generation returned); "invalid" = the AST-equality gate rejected the file (not written).
+DocstringStatus = Literal["documented", "skipped", "invalid", "no_change"]
+
+
+class DocstringOutcome(BaseModel):
+    """End-to-end result for one symbol the docstring stage considered."""
+
+    repo: str
+    path: str  # repo-relative source path
+    qualname: str
+    kind: str  # module | class | function | method
+    status: DocstringStatus
+    note: str = ""  # human-readable reason (why skipped/invalid)
+
+
+# ---------------------------------------------------------------------------
 # Stage 5 — validation (validate.py)
 # ---------------------------------------------------------------------------
 
 
 class ValidationResult(BaseModel):
+    """Outcome of validating one edited or authored page.
+
+    Attributes:
+        page_path: Path of the validated page.
+        passed: True when every hard gate passed.
+        failures: Hard-gate failures that drop the page.
+        warnings: Soft-gate issues that annotate the PR without dropping the page.
+    """
     page_path: str
     passed: bool
     failures: list[str] = Field(default_factory=list)  # hard-gate failures (drop page)
@@ -517,6 +672,11 @@ class ModelUsage(BaseModel):
 
     @property
     def prompt_tokens(self) -> int:
+        """Return the billable prompt tokens for this usage.
+
+        Returns:
+            The sum of input_tokens, cache_creation_input_tokens, and cache_read_input_tokens.
+        """
         return _prompt_tokens(self)
 
 
@@ -539,6 +699,11 @@ class RunUsage(BaseModel):
 
     @property
     def prompt_tokens(self) -> int:
+        """Return the billable prompt tokens totalled across the run.
+
+        Returns:
+            The sum of input_tokens, cache_creation_input_tokens, and cache_read_input_tokens.
+        """
         return _prompt_tokens(self)
 
 
@@ -560,11 +725,23 @@ class PageOutcome(BaseModel):
 
 
 class PipelineResult(BaseModel):
+    """End-to-end result of a `run` pipeline invocation.
+
+    Attributes:
+        diff: The source diff that drove the run.
+        outcomes: Per-page results produced by the run.
+        usage: Token/cost accounting for the run's LLM calls, or None if not tracked.
+    """
     diff: CodeDiff
     outcomes: list[PageOutcome] = Field(default_factory=list)
     usage: Optional[RunUsage] = None  # token/cost accounting for the run's LLM calls
 
     def changed(self) -> list[PageOutcome]:
+        """Return the outcomes whose edits were applied and produced new content.
+
+        Returns:
+            Outcomes that were applied and carry patched new_content.
+        """
         return [o for o in self.outcomes if o.applied and o.new_content is not None]
 
 
@@ -580,6 +757,31 @@ class BootstrapResult(BaseModel):
     def authored(self) -> list[PageOutcome]:
         """Pages that were authored, validated, and are ready to write."""
         return [o for o in self.outcomes if o.applied and o.new_content is not None]
+
+
+class DocstringResult(BaseModel):
+    """End-to-end result of the docstring stage across one or more source repos."""
+
+    outcomes: list[DocstringOutcome] = Field(default_factory=list)
+    # New full text per file that passed validation, keyed by the file's absolute path.
+    # The orchestrator writes these in place; kept on the result so a dry run can
+    # report/patch without re-generating.
+    file_texts: dict[str, str] = Field(default_factory=dict)
+    usage: Optional[RunUsage] = None
+
+    def documented(self) -> list[DocstringOutcome]:
+        """Return the outcomes for symbols that got a docstring written.
+
+        Returns:
+            Outcomes whose status is 'documented'.
+        """
+        return [o for o in self.outcomes if o.status == "documented"]
+
+    def changed_paths(self) -> list[str]:
+        """Repo-relative paths of files that got at least one documented symbol."""
+        return _dedupe_preserving_order(
+            o.path for o in self.outcomes if o.status == "documented"
+        )
 
 
 # ---------------------------------------------------------------------------

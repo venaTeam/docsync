@@ -134,6 +134,11 @@ class MintlifyAdapter(DocAdapter):
         return dict(post.metadata), post.content
 
     def frontmatter_keys_to_freeze(self) -> list[str]:
+        """Return the frontmatter keys that must remain frozen during edits.
+
+        Returns:
+            The list of frontmatter keys ("title" and "description") that edits must not change.
+        """
         return ["title", "description"]
 
     # -- authoring / additive-edit policy ---------------------------------
@@ -143,6 +148,17 @@ class MintlifyAdapter(DocAdapter):
         return _ADDITIVE_SAFE_COMPONENTS
 
     def authoring_components_hint(self) -> str:
+        """Return authoring guidance for handling Mintlify MDX components.
+
+        Describes the component rules for edits: new leaf components (such as <Note>, <Tip>,
+        <Warning>, <Info>, <Card>, <Step>, <Accordion>, <Tab>) may be added as balanced pairs
+        (or self-closing), while removing components, altering container components (<CardGroup>,
+        <Steps>, <Tabs>, <AccordionGroup>), reordering or mis-nesting tags, or changing the number
+        of code/mermaid fences is disallowed.
+
+        Returns:
+            The guidance text describing which MDX component changes are permitted.
+        """
         return (
             "This page uses Mintlify MDX components. You MAY add new leaf components — "
             "<Note>, <Tip>, <Warning>, <Info>, <Card>, <Step>, <Accordion>, <Tab> — when "
